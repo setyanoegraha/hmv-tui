@@ -73,6 +73,31 @@ impl MachineScraper {
     }
 }
 
+/// Hypervisors the row's icon images advertise: `/img/vb.png` is VirtualBox
+/// only, `/img/vbvm.png` is VirtualBox plus VMware.
+fn hypervisors_from_row(
+    row: &scraper::ElementRef<'_>,
+    img_sel: &scraper::Selector,
+) -> Vec<&'static str> {
+    let mut hypervisors: Vec<&'static str> = Vec::new();
+    for img in row.select(img_sel) {
+        let src = img.value().attr("src").unwrap_or("").to_lowercase();
+        if src.ends_with("/vb.png") || src == "vb.png" {
+            if !hypervisors.contains(&"VirtualBox") {
+                hypervisors.push("VirtualBox");
+            }
+        } else if src.ends_with("/vbvm.png") || src == "vbvm.png" {
+            if !hypervisors.contains(&"VirtualBox") {
+                hypervisors.push("VirtualBox");
+            }
+            if !hypervisors.contains(&"VMware") {
+                hypervisors.push("VMware");
+            }
+        }
+    }
+    hypervisors
+}
+
 /// Pure parsing function so it can be unit-tested against fixture HTML.
 pub fn parse_machines(
     html: &str,
@@ -138,25 +163,8 @@ pub fn parse_machines(
         }
 
         // Hypervisor compatibility: the row carries icon images whose src
-        // encodes the tested hypervisor(s):
-        //   /img/vb.png    -> tested on VirtualBox only
-        //   /img/vbvm.png  -> tested on VirtualBox and VMware
-        let mut hypervisors: Vec<&str> = Vec::new();
-        for img in row.select(&img_sel) {
-            let src = img.value().attr("src").unwrap_or("").to_lowercase();
-            if src.ends_with("/vb.png") || src == "vb.png" {
-                if !hypervisors.contains(&"VirtualBox") {
-                    hypervisors.push("VirtualBox");
-                }
-            } else if src.ends_with("/vbvm.png") || src == "vbvm.png" {
-                if !hypervisors.contains(&"VirtualBox") {
-                    hypervisors.push("VirtualBox");
-                }
-                if !hypervisors.contains(&"VMware") {
-                    hypervisors.push("VMware");
-                }
-            }
-        }
+        // encodes the tested hypervisor(s).
+        let hypervisors = hypervisors_from_row(&row, &img_sel);
 
         machines.push(Machine {
             name: name_node.text().collect::<String>().trim().to_string(),

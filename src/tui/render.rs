@@ -13,7 +13,7 @@ use super::{
     downloads::Phase, ActionReport, AppState, InputMode, Popup, PopupKind, ReportKind, Tab,
     ViewMode, WriteupsPopup,
 };
-use crate::i18n::Key;
+use crate::i18n::{Key, Lang};
 
 // Nord theme palette (https://www.nordtheme.com/docs/colors-and-palettes).
 const NORD1: Color = Color::Rgb(0x3B, 0x42, 0x52); // polar night (dim bg)
@@ -95,15 +95,24 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &AppState) {
             Style::new().fg(ACCENT),
         ),
         Span::raw("  ·  "),
-        Span::styled(format!("{} pts", stats.points), Style::new().fg(WARN)),
+        Span::styled(
+            super::fmt_key(app.lang.t(Key::HeaderPoints), &[&stats.points.to_string()]),
+            Style::new().fg(WARN),
+        ),
         Span::raw("  ·  "),
         Span::styled(
-            format!("{} writeups", stats.accepted_writeups.len()),
+            super::fmt_key(
+                app.lang.t(Key::HeaderWriteups),
+                &[&stats.accepted_writeups.len().to_string()],
+            ),
             Style::new().fg(FROST),
         ),
         Span::raw("  ·  "),
         Span::styled(
-            format!("{pending_count} pending"),
+            super::fmt_key(
+                app.lang.t(Key::HeaderPending),
+                &[&pending_count.to_string()],
+            ),
             Style::new().fg(if pending_count > 0 { WARN } else { OK }),
         ),
     ]);
@@ -247,9 +256,13 @@ fn draw_stats(frame: &mut Frame, area: Rect, app: &AppState) {
 
 fn draw_writeups(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let visible = app.visible_writeups();
-    let header = Row::new(["VM", "Language", "Link"])
-        .style(Style::new().fg(ACCENT).bold())
-        .bottom_margin(0);
+    let header = Row::new([
+        app.lang.t(Key::ColVm),
+        app.lang.t(Key::ColLanguage),
+        app.lang.t(Key::ColLink),
+    ])
+    .style(Style::new().fg(ACCENT).bold())
+    .bottom_margin(0);
 
     let rows: Vec<Row> = visible
         .iter()
@@ -294,7 +307,7 @@ fn draw_pending(frame: &mut Frame, area: Rect, app: &mut AppState) {
             ListItem::new(Line::from(vec![
                 Span::styled(" ● ", Style::new().fg(WARN)),
                 Span::styled(name, Style::new().fg(BRIGHT).bold()),
-                Span::styled("  — pwned, writeup not submitted", Style::new().dim()),
+                Span::styled(app.lang.t(Key::PendingItemSuffix), Style::new().dim()),
             ]))
         })
         .collect();
@@ -308,7 +321,7 @@ fn draw_pending(frame: &mut Frame, area: Rect, app: &mut AppState) {
 
     if visible.is_empty() {
         let empty = Paragraph::new(Span::styled(
-            "Nothing pending — every pwned machine has an accepted writeup!",
+            app.lang.t(Key::PendingEmpty),
             Style::new().fg(ACCENT),
         ))
         .block(filter_block(app));
@@ -359,6 +372,11 @@ fn filter_block(app: &AppState) -> Block<'_> {
         Tab::Stats => String::new(),
     };
 
+    styled_block(app, count_line)
+}
+
+/// Border, filter title and bottom count line shared by every tab body.
+fn styled_block<'a>(app: &'a AppState, count_line: String) -> Block<'a> {
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().dim());
@@ -630,6 +648,12 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup, app: &AppState) {
         return;
     }
 
+    render_text_popup(frame, box_area, popup, *lang);
+}
+
+/// Body of the text-input popups (Flag / Upload / Download / Config): title,
+/// field prompts, notice banner, completion list and hint.
+fn render_text_popup(frame: &mut Frame, box_area: Rect, popup: &Popup, lang: Lang) {
     let (title, prompts, hint): (String, Vec<&str>, &str) = match popup.kind {
         PopupKind::Flag => (
             super::fmt_key(lang.t(Key::PopupSubmitFlags), &[&popup.vm]),
@@ -739,9 +763,12 @@ fn draw_releases(frame: &mut Frame, area: Rect, app: &mut AppState) {
                 Span::styled(r.os.clone(), Style::new().fg(WARN))
             };
             let status_span = if r.released {
-                Span::styled("RELEASED", Style::new().fg(OK).bold())
+                Span::styled(app.lang.t(Key::ReleaseReleased), Style::new().fg(OK).bold())
             } else {
-                Span::styled("UPCOMING", Style::new().fg(PURPLE).bold())
+                Span::styled(
+                    app.lang.t(Key::ReleaseUpcoming),
+                    Style::new().fg(PURPLE).bold(),
+                )
             };
             Row::new([
                 Span::styled(r.date.clone(), Style::new().dim()),
@@ -892,7 +919,8 @@ fn draw_submissions(frame: &mut Frame, area: Rect, app: &mut AppState) {
 }
 
 fn draw_report(frame: &mut Frame, area: Rect, report: &ActionReport, lang: &crate::i18n::Lang) {
-    let height = (report.entries.len() as u16 + 4).clamp(5, 12);
+    // One blank + (entry + blank) per row + hint = 2n + 2 inner lines.
+    let height = (report.entries.len() as u16 * 2 + 4).clamp(6, 14);
     let width = 60;
     let box_area = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
@@ -1011,6 +1039,23 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
+fn empty_downloads_line(app: &AppState, lines: &mut Vec<Line>) {
+    if app.download_jobs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            app.lang.t(Key::DownloadsEmpty),
+            Style::new().dim(),
+        )));
+    }
+}
+
+fn selected_download_index(app: &AppState) -> usize {
+    if app.view == ViewMode::Downloads {
+        app.download_selected()
+    } else {
+        usize::MAX
+    }
+}
+
 fn draw_downloads(frame: &mut Frame, area: Rect, app: &AppState) {
     let jobs = app.download_jobs.len();
     let height = (jobs as u16 + 5).clamp(6, 16);
@@ -1018,18 +1063,9 @@ fn draw_downloads(frame: &mut Frame, area: Rect, app: &AppState) {
     frame.render_widget(Clear, box_area);
 
     let mut lines: Vec<Line> = Vec::new();
-    if jobs == 0 {
-        lines.push(Line::from(Span::styled(
-            app.lang.t(Key::DownloadsEmpty),
-            Style::new().dim(),
-        )));
-    }
+    empty_downloads_line(app, &mut lines);
 
-    let selected_index = if app.view == ViewMode::Downloads {
-        app.download_selected()
-    } else {
-        usize::MAX
-    };
+    let selected_index = selected_download_index(app);
 
     for (index, job) in app.download_jobs.iter().enumerate() {
         // Lock once and read everything through the guard: `is_active()`
@@ -1213,4 +1249,351 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &AppState) {
 /// How many table rows fit in `height` (border 2 + header 1).
 fn visible_rows_in(height: u16, _len: usize) -> usize {
     height.saturating_sub(3) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::releases::Release;
+    use crate::modules::submissions::{FieldKind, FormField, QueueEntry};
+    use crate::modules::writeups::Writeup;
+    use crate::tui::TuiData;
+    use ratatui::backend::TestBackend;
+
+    /// Renders `app` into a 100x30 test buffer and returns the screen as text.
+    fn screen(app: &mut AppState) -> String {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn app() -> AppState {
+        AppState::new(TuiData::empty())
+    }
+
+    #[test]
+    fn header_and_tabs_render_for_the_active_tab() {
+        let mut state = app();
+        state.tab = Tab::Machines;
+        let out = screen(&mut state);
+        assert!(out.contains("HackMyVM"), "header missing: {out}");
+        assert!(out.contains("Machines"), "tab labels missing: {out}");
+    }
+
+    #[test]
+    fn filter_block_shows_the_active_filter() {
+        let mut state = app();
+        state.tab = Tab::Writeups;
+        state.input_mode = InputMode::Filter;
+        state.filter = "fuxa".into();
+        let out = screen(&mut state);
+        assert!(out.contains("filter: fuxa"), "filter title missing: {out}");
+    }
+
+    #[test]
+    fn stats_gauge_prints_count_and_percent() {
+        let mut state = app();
+        state.data.progress = vec![("Total VMs".into(), 166, 371)];
+        let out = screen(&mut state);
+        assert!(
+            out.contains("Total VMs 166/371 (45%)"),
+            "gauge missing: {out}"
+        );
+    }
+
+    #[test]
+    fn text_popup_renders_both_fields() {
+        let mut state = app();
+        state.popup = Some(Popup {
+            kind: PopupKind::Flag,
+            vm: "Fuxa".into(),
+            buffers: vec![String::new(), String::new()],
+            field: 0,
+            notice: None,
+            readonly: false,
+            completions: Vec::new(),
+        });
+        let out = screen(&mut state);
+        assert!(out.contains("User flag:"), "user field missing: {out}");
+        assert!(out.contains("Root flag:"), "root field missing: {out}");
+    }
+
+    #[test]
+    fn downloads_overlay_renders_empty_state() {
+        let mut state = app();
+        state.view = ViewMode::Downloads;
+        let out = screen(&mut state);
+        assert!(
+            out.contains("No downloads yet"),
+            "empty downloads state missing: {out}"
+        );
+    }
+
+    fn popup(kind: PopupKind, vm: &str, buffers: Vec<String>) -> Popup {
+        Popup {
+            kind,
+            vm: vm.into(),
+            buffers,
+            field: 0,
+            notice: None,
+            readonly: false,
+            completions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pending_tab_lists_and_shows_empty_state() {
+        let mut state = app();
+        state.tab = Tab::Pending;
+        state.data.pending = vec!["Fuxa".into()];
+        let out = screen(&mut state);
+        assert!(out.contains("Fuxa"), "pending name missing: {out}");
+        assert!(
+            out.contains("pwned, writeup not submitted"),
+            "pending suffix missing: {out}"
+        );
+
+        state.data.pending.clear();
+        let out = screen(&mut state);
+        assert!(
+            out.contains("Nothing pending"),
+            "empty pending state missing: {out}"
+        );
+    }
+
+    #[test]
+    fn releases_tab_marks_released_and_upcoming() {
+        let mut state = app();
+        state.tab = Tab::Releases;
+        state.data.releases = vec![
+            Release {
+                date: "03-Sept".into(),
+                name: "Arcane".into(),
+                os: "linux".into(),
+                released: true,
+            },
+            Release {
+                date: "09-Sept".into(),
+                name: "INVERNADERO_1.0".into(),
+                os: "windows".into(),
+                released: false,
+            },
+        ];
+        let out = screen(&mut state);
+        assert!(out.contains("RELEASED"), "released label missing: {out}");
+        assert!(out.contains("UPCOMING"), "upcoming label missing: {out}");
+        assert!(out.contains("Arcane"), "release row missing: {out}");
+    }
+
+    #[test]
+    fn submissions_tab_splits_mine_from_queue() {
+        let mut state = app();
+        state.tab = Tab::Submissions;
+        state.data.stats.username = "demouser".into();
+        state.data.submissions = vec![
+            QueueEntry {
+                user: "demouser".into(),
+                name: "Mine".into(),
+                date: "01-Oct".into(),
+                status: "pending".into(),
+                level: "easy".into(),
+            },
+            QueueEntry {
+                user: "other".into(),
+                name: "Theirs".into(),
+                date: "02-Oct".into(),
+                status: "accepted".into(),
+                level: "hard".into(),
+            },
+        ];
+        let out = screen(&mut state);
+        assert!(
+            out.contains(Lang::En.t(Key::MySubmissionsTitle)),
+            "mine pane title missing: {out}"
+        );
+        assert!(out.contains("Mine"), "own submission missing: {out}");
+        assert!(out.contains("Theirs"), "queue entry missing: {out}");
+    }
+
+    #[test]
+    fn report_popup_renders_entries_and_hint() {
+        let mut state = app();
+        state.report = Some(ActionReport {
+            title: "Report".into(),
+            entries: vec![
+                (ReportKind::Success, "User: ✓ ACCEPTED".into()),
+                (ReportKind::Failure, "Root: ✗ REJECTED".into()),
+            ],
+            changed: false,
+            status: String::new(),
+        });
+        let out = screen(&mut state);
+        assert!(out.contains("User: ✓ ACCEPTED"), "entry missing: {out}");
+        assert!(out.contains("Root: ✗ REJECTED"), "entry missing: {out}");
+
+        // One entry fits the popup's inner rows, so the footer hint renders.
+        state.report = Some(ActionReport {
+            title: "Report".into(),
+            entries: vec![(ReportKind::Info, "Nothing to report".into())],
+            changed: true,
+            status: String::new(),
+        });
+        let out = screen(&mut state);
+        assert!(
+            out.contains(Lang::En.t(Key::ReportHintRefresh)),
+            "refresh hint missing: {out}"
+        );
+    }
+
+    #[test]
+    fn writeups_popup_lists_community_writeups() {
+        let mut state = app();
+        state.writeups_popup = Some(WriteupsPopup {
+            vm: "Fuxa".into(),
+            selected: 0,
+            entries: vec![Writeup {
+                date: "2026-01-01".into(),
+                author: "alice".into(),
+                language: "English".into(),
+                format: "Read".into(),
+                url: "https://example.com/a".into(),
+            }],
+        });
+        let out = screen(&mut state);
+        assert!(out.contains("alice"), "author missing: {out}");
+        assert!(out.contains("https://example.com/a"), "url missing: {out}");
+    }
+
+    #[test]
+    fn account_popup_renders_logged_in_user() {
+        let mut state = app();
+        state.popup = Some(popup(PopupKind::Account, "demouser", Vec::new()));
+        let out = screen(&mut state);
+        assert!(out.contains("demouser"), "user missing: {out}");
+        assert!(
+            out.contains(Lang::En.t(Key::PopupAccountHint)),
+            "account hint missing: {out}"
+        );
+    }
+
+    #[test]
+    fn readonly_popup_renders_pwned_notice() {
+        let mut state = app();
+        let mut info = popup(PopupKind::Flag, "Fuxa", Vec::new());
+        info.readonly = true;
+        state.popup = Some(info);
+        let out = screen(&mut state);
+        assert!(
+            out.contains(Lang::En.t(Key::PopupPwnedLine1)),
+            "pwned line missing: {out}"
+        );
+        assert!(out.contains("Fuxa"), "popup title missing: {out}");
+    }
+
+    #[test]
+    fn rules_popup_renders_numbered_lines() {
+        let mut state = app();
+        state.popup = Some(popup(
+            PopupKind::Rules,
+            "",
+            vec!["1. Be nice\n2. No spoilers".into()],
+        ));
+        let out = screen(&mut state);
+        assert!(out.contains("No spoilers"), "rules body missing: {out}");
+    }
+
+    #[test]
+    fn submission_form_popup_renders_scraped_fields() {
+        let mut state = app();
+        state.data.submission_form = vec![
+            FormField {
+                name: "vmname".into(),
+                label: String::new(),
+                kind: FieldKind::Text,
+                required: true,
+                value: String::new(),
+            },
+            FormField {
+                name: "level".into(),
+                label: "Level".into(),
+                kind: FieldKind::Select(vec!["Easy".into(), "Hard".into()]),
+                required: true,
+                value: "Easy".into(),
+            },
+        ];
+        state.popup = Some(popup(
+            PopupKind::SubmissionForm,
+            "Fuxa",
+            vec![String::new()],
+        ));
+        let out = screen(&mut state);
+        assert!(
+            out.contains(Lang::En.t(Key::SubmitFormTitle)),
+            "form title missing: {out}"
+        );
+        // Labels come from fallback_form_fields() by index, not field.label.
+        assert!(out.contains("VM name:"), "first label missing: {out}");
+        assert!(out.contains("Download URL:"), "second label missing: {out}");
+    }
+
+    #[test]
+    fn config_popup_masks_the_password_field() {
+        let mut state = app();
+        let mut config = popup(
+            PopupKind::Config,
+            "demouser",
+            vec!["demouser".into(), "hunter2".into()],
+        );
+        config.field = 1;
+        state.popup = Some(config);
+        let out = screen(&mut state);
+        assert!(!out.contains("hunter2"), "password leaked: {out}");
+        assert!(out.contains('•'), "masked characters missing: {out}");
+    }
+
+    #[test]
+    fn download_popup_lists_completions() {
+        let mut state = app();
+        let mut dl = popup(PopupKind::Download, "Fuxa", vec!["~/".into()]);
+        dl.completions = vec!["Downloads".into(), "Documents".into()];
+        state.popup = Some(dl);
+        let out = screen(&mut state);
+        assert!(out.contains("Downloads"), "completion missing: {out}");
+        assert!(
+            out.contains(Lang::En.t(Key::PopupDirectories)),
+            "completion header missing: {out}"
+        );
+    }
+
+    #[test]
+    fn notice_banner_is_rendered() {
+        let mut state = app();
+        let mut flag = popup(PopupKind::Flag, "Fuxa", vec![String::new()]);
+        flag.notice = Some("One flag already submitted — one remains.".into());
+        state.popup = Some(flag);
+        let out = screen(&mut state);
+        assert!(
+            out.contains("One flag already submitted"),
+            "notice banner missing: {out}"
+        );
+    }
+
+    #[test]
+    fn spanish_writeups_header_is_translated() {
+        let mut state = AppState::new_with_lang(TuiData::empty(), crate::i18n::Lang::Es);
+        state.tab = Tab::Writeups;
+        let out = screen(&mut state);
+        assert!(out.contains("Idioma"), "Spanish header missing: {out}");
+        assert!(out.contains("Enlace"), "Spanish header missing: {out}");
+        assert!(!out.contains("Language"), "untranslated header: {out}");
+    }
 }

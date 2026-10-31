@@ -251,6 +251,15 @@ pub enum Key {
 
     // Quit warning
     QuitWarnDownloads,
+
+    // Header counters & tab bodies
+    HeaderPoints,
+    HeaderWriteups,
+    HeaderPending,
+    PendingItemSuffix,
+    PendingEmpty,
+    ReleaseReleased,
+    ReleaseUpcoming,
 }
 
 fn en(key: Key) -> &'static str {
@@ -456,6 +465,15 @@ fn en(key: Key) -> &'static str {
         FetchingFlag => "Submitting flag for {}...",
         FetchingWriteup => "Submitting writeup for {}...",
         FetchingWriteupsList => "Loading writeups for {}...",
+
+        // Header counters & tab bodies
+        HeaderPoints => "{} pts",
+        HeaderWriteups => "{} writeups",
+        HeaderPending => "{} pending",
+        PendingItemSuffix => "  — pwned, writeup not submitted",
+        PendingEmpty => "Nothing pending — every pwned machine has an accepted writeup!",
+        ReleaseReleased => "RELEASED",
+        ReleaseUpcoming => "UPCOMING",
     }
 }
 
@@ -664,6 +682,17 @@ fn es(key: Key) -> &'static str {
         FetchingWriteupsList => "Cargando writeups de {}...",
         ReportWriteupRepeated => "Writeup: [=] YA ENVIADO",
         ReportWriteupRejected => "Writeup: ✗ RECHAZADO — ¿faltan flags?",
+
+        // Header counters & tab bodies
+        HeaderPoints => "{} pts",
+        HeaderWriteups => "{} writeups",
+        HeaderPending => "{} pendientes",
+        PendingItemSuffix => "  — comprometida, writeup no enviado",
+        PendingEmpty => {
+            "¡Nada pendiente — todas las máquinas comprometidas tienen un writeup aceptado!"
+        }
+        ReleaseReleased => "LANZADA",
+        ReleaseUpcoming => "PRÓXIMA",
     }
 }
 
