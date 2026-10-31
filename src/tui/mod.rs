@@ -528,11 +528,7 @@ impl AppState {
     pub fn unconfigured_with_lang(stored_username: Option<&str>, lang: Lang) -> Self {
         let mut state = Self::new_with_lang(TuiData::empty(), lang);
         state.needs_config = true;
-        let context = if stored_username
-            .as_deref()
-            .filter(|u| !u.trim().is_empty())
-            .is_some()
-        {
+        let context = if stored_username.filter(|u| !u.trim().is_empty()).is_some() {
             ConfigContext::LoginFailed
         } else {
             ConfigContext::FirstRun
@@ -1222,19 +1218,7 @@ impl AppState {
             }
         }
 
-        let status_key = match popup.kind {
-            PopupKind::Flag => {
-                if values.len() > 1 {
-                    Key::StatusQueuedFlags
-                } else {
-                    Key::StatusQueuedFlag
-                }
-            }
-            PopupKind::Upload => Key::StatusQueuedWriteup,
-            PopupKind::Download => Key::StatusQueuedDownload,
-            PopupKind::Config | PopupKind::Account => unreachable!("handled above"),
-            PopupKind::SubmissionForm | PopupKind::Rules => unreachable!("handled above"),
-        };
+        let status_key = queued_status_key(popup.kind, values.len());
         self.set_status(fmt_key(self.lang.t(status_key), &[&popup.vm]));
         self.pending_action = Some(TuiAction {
             kind: popup.kind,
@@ -1359,17 +1343,7 @@ pub fn build_flag_report(lang: Lang, vm: &str, results: Vec<(usize, FlagVerdict)
     let mut changed = false;
 
     for (field, verdict) in results {
-        let key = if field == 0 {
-            Key::PopupUserFlag
-        } else {
-            Key::PopupRootFlag
-        };
-        let label = lang.t(key).trim_end_matches(':');
-        let short = if field == 0 {
-            lang.t(Key::CompactUser)
-        } else {
-            lang.t(Key::CompactRoot)
-        };
+        let (label, short) = flag_labels(lang, field);
         match verdict {
             FlagVerdict::Correct => {
                 entries.push((
@@ -1483,14 +1457,6 @@ fn event_loop(
     mut pending_fetch: bool,
     host: HostOps,
 ) -> Result<()> {
-    let HostOps {
-        refetch,
-        run_action,
-        run_writeups_fetch,
-        run_config,
-        logout,
-        fetch_submissions,
-    } = host;
     // One host operation in the air at a time; set together with
     // `app.fetching` and cleared when its outcome is applied.
     let mut in_flight = false;
@@ -1515,145 +1481,10 @@ fn event_loop(
         }
 
         if !in_flight {
-            // Logout from the account popup (`l`): drop the stored account
-            // and the session, then return to the login popup. Active
-            // downloads keep running — they use public MEGA links, not the
-            // session.
-            if app.pending_logout {
-                app.pending_logout = false;
-                in_flight = true;
-                app.fetching = Some(app.lang.t(Key::FetchingLogout).to_string());
-                let tx = tx.clone();
-                let logout = logout.clone();
-                std::thread::spawn(move || {
-                    let _ = tx.send(HostOutcome::LoggedOut(logout()));
-                });
-            }
-
-            // User actions from popups (config, flag submission, writeup
-            // upload, download start).
-            if let Some(action) = app.pending_action.take() {
-                match action.kind {
-                    PopupKind::Download => {
-                        // Non-blocking: spawn a background job and move on.
-                        let dir = PathBuf::from(action.values[0].1.clone());
-                        match downloads::start_download(action.vm.clone(), dir) {
-                            Ok(job) => {
-                                app.set_status(fmt_key(
-                                    app.lang.t(Key::StatusDownloadStarted),
-                                    &[&action.vm],
-                                ));
-                                app.download_jobs.push(std::sync::Arc::new(job));
-                            }
-                            Err(error) => app.set_status(fmt_key(
-                                app.lang.t(Key::StatusDownloadFailed),
-                                &[&format!("{error:#}")],
-                            )),
-                        }
-                    }
-                    PopupKind::Config => {
-                        let value = |field: usize| {
-                            action
-                                .values
-                                .iter()
-                                .find(|(f, _)| *f == field)
-                                .map(|(_, v)| v.clone())
-                                .unwrap_or_default()
-                        };
-                        in_flight = true;
-                        let (username, password) = (value(0), value(1));
-                        let tx = tx.clone();
-                        let run_config = run_config.clone();
-                        std::thread::spawn(move || {
-                            let result = run_config(&username, &password);
-                            let _ = tx.send(HostOutcome::Configured { username, result });
-                        });
-                    }
-                    PopupKind::Account | PopupKind::Rules => {
-                        unreachable!("no action is queued from these popups")
-                    }
-                    PopupKind::Flag | PopupKind::Upload | PopupKind::SubmissionForm => {
-                        let label = match action.kind {
-                            PopupKind::Flag => {
-                                fmt_key(app.lang.t(Key::FetchingFlag), &[&action.vm])
-                            }
-                            PopupKind::Upload => {
-                                fmt_key(app.lang.t(Key::FetchingWriteup), &[&action.vm])
-                            }
-                            _ => unreachable!("handled above"),
-                        };
-                        in_flight = true;
-                        app.fetching = Some(label);
-                        let tx = tx.clone();
-                        let run_action = run_action.clone();
-                        std::thread::spawn(move || {
-                            let _ = tx.send(HostOutcome::Actioned(run_action(action)));
-                        });
-                    }
-                }
-            }
-
-            // Queued writeups fetch for the `w` key. Runs with a
-            // `⟳ Loading writeups for <vm>...` label; opens the popup when
-            // the outcome arrives.
-            if let Some(vm) = app.pending_writeups.take() {
-                in_flight = true;
-                app.fetching = Some(fmt_key(app.lang.t(Key::FetchingWriteupsList), &[&vm]));
-                let tx = tx.clone();
-                let run_writeups_fetch = run_writeups_fetch.clone();
-                std::thread::spawn(move || {
-                    let result = run_writeups_fetch(&vm);
-                    let _ = tx.send(HostOutcome::Writeups { vm, result });
-                });
-            }
-
-            // Queued submissions fetch (Submissions tab open or `r` there).
-            if app.pending_submissions {
-                app.pending_submissions = false;
-                in_flight = true;
-                app.fetching = Some(app.lang.t(Key::FetchingRefreshing).to_string());
-                let tx = tx.clone();
-                let fetch_submissions = fetch_submissions.clone();
-                std::thread::spawn(move || {
-                    let _ = tx.send(HostOutcome::Submissions {
-                        result: fetch_submissions(),
-                    });
-                });
-            }
-
-            // Full dashboard refresh.
-            if app.should_fetch(pending_fetch) {
-                pending_fetch = false;
-                app.refresh_requested = false;
-                in_flight = true;
-                app.fetching = Some(app.lang.t(Key::FetchingRefreshing).to_string());
-                let tx = tx.clone();
-                let refetch = refetch.clone();
-                std::thread::spawn(move || {
-                    let _ = tx.send(HostOutcome::Fetched(Box::new(refetch())));
-                });
-            }
+            in_flight = spawn_queued_host_work(app, &tx, &host, &mut pending_fetch);
         }
 
-        // Start queued downloads as slots free up. Terminal jobs are kept
-        // for the rest of the session as a small success/failure history.
-        if app.active_downloads() < downloads::PARALLEL_DOWNLOADS {
-            while let Some((vm, dir)) = app.download_queue.pop_front() {
-                match downloads::start_download(vm.clone(), dir) {
-                    Ok(job) => {
-                        app.set_status(fmt_key(app.lang.t(Key::StatusDownloadStarted), &[&vm]));
-                        app.download_jobs.push(std::sync::Arc::new(job));
-                    }
-                    Err(error) => app.set_status(fmt_key(
-                        app.lang.t(Key::StatusDownloadFailed),
-                        &[&format!("{error:#}")],
-                    )),
-                }
-                if app.active_downloads() >= downloads::PARALLEL_DOWNLOADS {
-                    break;
-                }
-            }
-        }
+        start_queued_downloads(app);
 
         if app.quit {
             // Abort active tasks and clean their staged `.part` files.
@@ -1664,6 +1495,158 @@ fn event_loop(
                 }
             }
             return Ok(());
+        }
+    }
+}
+
+/// Runs every queued host request reachable this iteration. Returns true
+/// when at least one background call is now in flight.
+fn spawn_queued_host_work(
+    app: &mut AppState,
+    tx: &std::sync::mpsc::Sender<HostOutcome>,
+    host: &HostOps,
+    pending_fetch: &mut bool,
+) -> bool {
+    let mut started = false;
+
+    if app.pending_logout {
+        app.pending_logout = false;
+        started = true;
+        app.fetching = Some(app.lang.t(Key::FetchingLogout).to_string());
+        let tx = tx.clone();
+        let logout = host.logout.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(HostOutcome::LoggedOut(logout()));
+        });
+    }
+
+    if let Some(action) = app.pending_action.take() {
+        started |= spawn_action(app, action, tx, host);
+    }
+
+    if let Some(vm) = app.pending_writeups.take() {
+        started = true;
+        app.fetching = Some(fmt_key(app.lang.t(Key::FetchingWriteupsList), &[&vm]));
+        let tx = tx.clone();
+        let run_writeups_fetch = host.run_writeups_fetch.clone();
+        std::thread::spawn(move || {
+            let result = run_writeups_fetch(&vm);
+            let _ = tx.send(HostOutcome::Writeups { vm, result });
+        });
+    }
+
+    if app.pending_submissions {
+        app.pending_submissions = false;
+        started = true;
+        app.fetching = Some(app.lang.t(Key::FetchingRefreshing).to_string());
+        let tx = tx.clone();
+        let fetch_submissions = host.fetch_submissions.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(HostOutcome::Submissions {
+                result: fetch_submissions(),
+            });
+        });
+    }
+
+    if app.should_fetch(*pending_fetch) {
+        *pending_fetch = false;
+        app.refresh_requested = false;
+        started = true;
+        app.fetching = Some(app.lang.t(Key::FetchingRefreshing).to_string());
+        let tx = tx.clone();
+        let refetch = host.refetch.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(HostOutcome::Fetched(Box::new(refetch())));
+        });
+    }
+
+    started
+}
+
+/// Starts a confirmed popup action. Returns true when a host call is in
+/// flight (the download arm starts a background job instead and returns
+/// false, exactly as the original block did).
+fn spawn_action(
+    app: &mut AppState,
+    action: TuiAction,
+    tx: &std::sync::mpsc::Sender<HostOutcome>,
+    host: &HostOps,
+) -> bool {
+    let mut started = false;
+    match action.kind {
+        PopupKind::Download => {
+            let dir = PathBuf::from(action.values[0].1.clone());
+            match downloads::start_download(action.vm.clone(), dir) {
+                Ok(job) => {
+                    app.set_status(fmt_key(
+                        app.lang.t(Key::StatusDownloadStarted),
+                        &[&action.vm],
+                    ));
+                    app.download_jobs.push(std::sync::Arc::new(job));
+                }
+                Err(error) => app.set_status(fmt_key(
+                    app.lang.t(Key::StatusDownloadFailed),
+                    &[&format!("{error:#}")],
+                )),
+            }
+        }
+        PopupKind::Config => {
+            let value = |field: usize| {
+                action
+                    .values
+                    .iter()
+                    .find(|(f, _)| *f == field)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            };
+            started = true;
+            let (username, password) = (value(0), value(1));
+            let tx = tx.clone();
+            let run_config = host.run_config.clone();
+            std::thread::spawn(move || {
+                let result = run_config(&username, &password);
+                let _ = tx.send(HostOutcome::Configured { username, result });
+            });
+        }
+        PopupKind::Account | PopupKind::Rules => {
+            unreachable!("no action is queued from these popups")
+        }
+        PopupKind::Flag | PopupKind::Upload | PopupKind::SubmissionForm => {
+            let label = match action.kind {
+                PopupKind::Flag => fmt_key(app.lang.t(Key::FetchingFlag), &[&action.vm]),
+                PopupKind::Upload => fmt_key(app.lang.t(Key::FetchingWriteup), &[&action.vm]),
+                _ => unreachable!("handled above"),
+            };
+            started = true;
+            app.fetching = Some(label);
+            let tx = tx.clone();
+            let run_action = host.run_action.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(HostOutcome::Actioned(run_action(action)));
+            });
+        }
+    }
+    started
+}
+
+/// Starts queued downloads while parallel slots are free.
+fn start_queued_downloads(app: &mut AppState) {
+    if app.active_downloads() >= downloads::PARALLEL_DOWNLOADS {
+        return;
+    }
+    while let Some((vm, dir)) = app.download_queue.pop_front() {
+        match downloads::start_download(vm.clone(), dir) {
+            Ok(job) => {
+                app.set_status(fmt_key(app.lang.t(Key::StatusDownloadStarted), &[&vm]));
+                app.download_jobs.push(std::sync::Arc::new(job));
+            }
+            Err(error) => app.set_status(fmt_key(
+                app.lang.t(Key::StatusDownloadFailed),
+                &[&format!("{error:#}")],
+            )),
+        }
+        if app.active_downloads() >= downloads::PARALLEL_DOWNLOADS {
+            break;
         }
     }
 }
@@ -1742,18 +1725,7 @@ fn apply_outcome(app: &mut AppState, outcome: HostOutcome, pending_fetch: &mut b
             ));
         }
         HostOutcome::Submissions { result } => match result {
-            Ok((queue, rules, form)) => {
-                app.data.submissions = queue;
-                if rules.is_some() {
-                    app.data.rules = rules;
-                }
-                if !form.is_empty() {
-                    app.data.submission_form = form;
-                }
-                if app.tab == Tab::Submissions {
-                    app.reset_list_position();
-                }
-            }
+            Ok((queue, rules, form)) => apply_submissions_outcome(app, queue, rules, form),
             Err(error) => app.set_status(fmt_key(
                 app.lang.t(Key::StatusFetchFailed),
                 &[&format!("{error:#}")],
@@ -1762,12 +1734,74 @@ fn apply_outcome(app: &mut AppState, outcome: HostOutcome, pending_fetch: &mut b
     }
 }
 
+/// Queued-status message for the popup kind that was just confirmed.
+fn queued_status_key(kind: PopupKind, field_count: usize) -> Key {
+    match kind {
+        PopupKind::Flag => {
+            if field_count > 1 {
+                Key::StatusQueuedFlags
+            } else {
+                Key::StatusQueuedFlag
+            }
+        }
+        PopupKind::Upload => Key::StatusQueuedWriteup,
+        PopupKind::Download => Key::StatusQueuedDownload,
+        PopupKind::Config | PopupKind::Account => unreachable!("handled above"),
+        PopupKind::SubmissionForm | PopupKind::Rules => unreachable!("handled above"),
+    }
+}
+
+/// Field label (long, colon stripped) and compact form (width-12 column).
+fn flag_labels(lang: Lang, field: usize) -> (&'static str, &'static str) {
+    let key = if field == 0 {
+        Key::PopupUserFlag
+    } else {
+        Key::PopupRootFlag
+    };
+    let label = lang.t(key).trim_end_matches(':');
+    let short = if field == 0 {
+        lang.t(Key::CompactUser)
+    } else {
+        lang.t(Key::CompactRoot)
+    };
+    (label, short)
+}
+
+/// Stores a fetched submission queue, its rules and the submit-form fields.
+fn apply_submissions_outcome(
+    app: &mut AppState,
+    queue: Vec<QueueEntry>,
+    rules: Option<String>,
+    form: Vec<FormField>,
+) {
+    app.data.submissions = queue;
+    if rules.is_some() {
+        app.data.rules = rules;
+    }
+    if !form.is_empty() {
+        app.data.submission_form = form;
+    }
+    if app.tab == Tab::Submissions {
+        app.reset_list_position();
+    }
+}
+
 fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.request_quit();
         return;
     }
+    if handle_popup_key(app, key) {
+        return;
+    }
+    match app.input_mode {
+        InputMode::Filter => handle_filter_key(app, key.code),
+        InputMode::Normal => handle_normal_key(app, key.code),
+    }
+}
 
+/// Returns true when a popup or overlay consumed the key.
+fn handle_popup_key(app: &mut AppState, key: crossterm::event::KeyEvent) -> bool {
     // Account popup captures everything until dismissed.
     if app.popup.as_ref().map(|p| p.kind) == Some(PopupKind::Account) {
         match key.code {
@@ -1779,7 +1813,7 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
             KeyCode::Esc | KeyCode::Char('q') => app.popup = None,
             _ => {}
         }
-        return;
+        return true;
     }
 
     // Writeups popup captures everything until dismissed.
@@ -1799,7 +1833,7 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
             }
             _ => {}
         }
-        return;
+        return true;
     }
 
     // Result report popup captures everything until dismissed. Closing it
@@ -1811,7 +1845,7 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
             }
             _ => {}
         }
-        return;
+        return true;
     }
 
     // Popup input mode captures everything first.
@@ -1822,129 +1856,141 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => app.popup = None,
                 _ => {}
             }
-            return;
+            return true;
         }
-        match key.code {
-            KeyCode::Esc => {
-                let is_config = app.popup.as_ref().map(|p| p.kind) == Some(PopupKind::Config);
-                app.popup = None;
-                if is_config {
-                    // Nothing else to do without an account — leave.
-                    app.quit = true;
-                } else {
-                    app.set_status(app.lang.t(Key::StatusCancelled));
-                }
-            }
-            KeyCode::Enter => app.confirm_popup(),
-            KeyCode::Backspace => {
-                if let Some(popup) = app.popup.as_mut() {
-                    popup.pop();
-                }
-            }
-            KeyCode::Up => {
-                if let Some(popup) = app.popup.as_mut() {
-                    popup.previous_field();
-                }
-            }
-            KeyCode::Tab => {
-                let is_download = app.popup.as_ref().map(|p| p.kind) == Some(PopupKind::Download);
-                if is_download {
-                    if let Some(popup) = app.popup.as_mut() {
-                        popup.complete_destination();
-                    }
-                } else if let Some(popup) = app.popup.as_mut() {
-                    popup.next_field();
-                }
-            }
-            KeyCode::Right | KeyCode::Left => {
-                // ←/→ on a <select> field cycles its locked value
-                // (Easy -> Medium -> Hard); on text fields it moves fields.
-                let select_options: Option<Vec<String>> = app.popup.as_ref().and_then(|popup| {
-                    app.data
-                        .submission_form
-                        .get(popup.field)
-                        .and_then(|f| match &f.kind {
-                            FieldKind::Select(options) => Some(options.clone()),
-                            _ => None,
-                        })
-                });
-                let forward = key.code == KeyCode::Right;
-                if let Some(options) = select_options {
-                    if let Some(popup) = app.popup.as_mut() {
-                        popup.cycle_value_step(&options, forward);
-                    }
-                } else if forward {
-                    if let Some(popup) = app.popup.as_mut() {
-                        popup.next_field();
-                    }
-                } else if let Some(popup) = app.popup.as_mut() {
-                    popup.previous_field();
-                }
-            }
-            KeyCode::Down => {
-                if let Some(popup) = app.popup.as_mut() {
-                    popup.next_field();
-                }
-            }
-            KeyCode::Char(c) => {
-                // Locked select fields accept no typing.
-                let is_locked_select = app
-                    .popup
-                    .as_ref()
-                    .and_then(|popup| app.data.submission_form.get(popup.field))
-                    .is_some_and(|f| matches!(f.kind, FieldKind::Select(_)));
-                if !is_locked_select {
-                    if let Some(popup) = app.popup.as_mut() {
-                        popup.push(c);
-                    }
-                }
-            }
-            _ => {}
-        }
-        return;
+        handle_popup_form_key(app, key.code);
+        return true;
     }
 
-    match app.input_mode {
-        InputMode::Filter => match key.code {
-            KeyCode::Esc => {
-                app.clear_filter();
-                app.input_mode = InputMode::Normal;
+    false
+}
+
+/// Typing and field navigation inside an editable popup.
+fn handle_popup_form_key(app: &mut AppState, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            let is_config = app.popup.as_ref().map(|p| p.kind) == Some(PopupKind::Config);
+            app.popup = None;
+            if is_config {
+                // Nothing else to do without an account — leave.
+                app.quit = true;
+            } else {
+                app.set_status(app.lang.t(Key::StatusCancelled));
             }
-            KeyCode::Enter => app.input_mode = InputMode::Normal,
-            KeyCode::Backspace => app.filter_pop(),
-            KeyCode::Char(c) => app.filter_push(c),
-            _ => {}
-        },
-        InputMode::Normal => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => app.request_quit(),
-            KeyCode::Char('r') => app.request_refresh(),
-            KeyCode::Tab | KeyCode::Right => app.next_tab(),
-            KeyCode::Left | KeyCode::BackTab => app.previous_tab(),
-            KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-            KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-            KeyCode::Home | KeyCode::Char('g') => app.move_start(),
-            KeyCode::Char('/') => app.enter_filter_mode(),
-            KeyCode::Char('a') => app.open_account_popup(),
-            KeyCode::Char('l') => app.toggle_language(),
-            KeyCode::Char('s') => app.cycle_machine_sort(),
-            KeyCode::Char('h') if app.tab == Tab::Machines => app.toggle_hide_pwned(),
-            KeyCode::Char('f') => app.open_action_popup(PopupKind::Flag),
-            KeyCode::Char('u') => app.open_action_popup(PopupKind::Upload),
-            KeyCode::Char('d') => app.open_action_popup(PopupKind::Download),
-            KeyCode::Char('w') => app.open_writeups_popup(),
-            KeyCode::Char('v') if app.tab == Tab::Submissions => app.open_submission_form(),
-            KeyCode::Char('i') if app.tab == Tab::Submissions => app.open_rules_popup(),
-            KeyCode::Char('o') => app.toggle_downloads_view(),
-            KeyCode::Char('c') if app.view == ViewMode::Downloads => {
-                // Cancel the most recent active download from the overlay.
-                if let Some(job) = app.download_jobs.iter().rev().find(|job| job.is_active()) {
-                    job.request_cancel();
-                    app.set_status(fmt_key(app.lang.t(Key::StatusCancelDownload), &[&job.vm]));
+        }
+        KeyCode::Enter => app.confirm_popup(),
+        KeyCode::Backspace => {
+            if let Some(popup) = app.popup.as_mut() {
+                popup.pop();
+            }
+        }
+        KeyCode::Up => {
+            if let Some(popup) = app.popup.as_mut() {
+                popup.previous_field();
+            }
+        }
+        KeyCode::Tab => {
+            let is_download = app.popup.as_ref().map(|p| p.kind) == Some(PopupKind::Download);
+            if is_download {
+                if let Some(popup) = app.popup.as_mut() {
+                    popup.complete_destination();
+                }
+            } else if let Some(popup) = app.popup.as_mut() {
+                popup.next_field();
+            }
+        }
+        KeyCode::Right | KeyCode::Left => {
+            // ←/→ on a <select> field cycles its locked value
+            // (Easy -> Medium -> Hard); on text fields it moves fields.
+            let select_options: Option<Vec<String>> = app.popup.as_ref().and_then(|popup| {
+                app.data
+                    .submission_form
+                    .get(popup.field)
+                    .and_then(|f| match &f.kind {
+                        FieldKind::Select(options) => Some(options.clone()),
+                        _ => None,
+                    })
+            });
+            let forward = code == KeyCode::Right;
+            if let Some(options) = select_options {
+                if let Some(popup) = app.popup.as_mut() {
+                    popup.cycle_value_step(&options, forward);
+                }
+            } else if forward {
+                if let Some(popup) = app.popup.as_mut() {
+                    popup.next_field();
+                }
+            } else if let Some(popup) = app.popup.as_mut() {
+                popup.previous_field();
+            }
+        }
+        KeyCode::Down => {
+            if let Some(popup) = app.popup.as_mut() {
+                popup.next_field();
+            }
+        }
+        KeyCode::Char(c) => {
+            // Locked select fields accept no typing.
+            let is_locked_select = app
+                .popup
+                .as_ref()
+                .and_then(|popup| app.data.submission_form.get(popup.field))
+                .is_some_and(|f| matches!(f.kind, FieldKind::Select(_)));
+            if !is_locked_select {
+                if let Some(popup) = app.popup.as_mut() {
+                    popup.push(c);
                 }
             }
-            KeyCode::Enter => app.open_selected_link(),
-            _ => {}
-        },
+        }
+        _ => {}
+    }
+}
+
+/// Keys while the filter input is active.
+fn handle_filter_key(app: &mut AppState, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.clear_filter();
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Enter => app.input_mode = InputMode::Normal,
+        KeyCode::Backspace => app.filter_pop(),
+        KeyCode::Char(c) => app.filter_push(c),
+        _ => {}
+    }
+}
+
+/// Keys in the dashboard's normal mode.
+fn handle_normal_key(app: &mut AppState, code: KeyCode) {
+    match code {
+        KeyCode::Char('q') | KeyCode::Esc => app.request_quit(),
+        KeyCode::Char('r') => app.request_refresh(),
+        KeyCode::Tab | KeyCode::Right => app.next_tab(),
+        KeyCode::Left | KeyCode::BackTab => app.previous_tab(),
+        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+        KeyCode::Home | KeyCode::Char('g') => app.move_start(),
+        KeyCode::Char('/') => app.enter_filter_mode(),
+        KeyCode::Char('a') => app.open_account_popup(),
+        KeyCode::Char('l') => app.toggle_language(),
+        KeyCode::Char('s') => app.cycle_machine_sort(),
+        KeyCode::Char('h') if app.tab == Tab::Machines => app.toggle_hide_pwned(),
+        KeyCode::Char('f') => app.open_action_popup(PopupKind::Flag),
+        KeyCode::Char('u') => app.open_action_popup(PopupKind::Upload),
+        KeyCode::Char('d') => app.open_action_popup(PopupKind::Download),
+        KeyCode::Char('w') => app.open_writeups_popup(),
+        KeyCode::Char('v') if app.tab == Tab::Submissions => app.open_submission_form(),
+        KeyCode::Char('i') if app.tab == Tab::Submissions => app.open_rules_popup(),
+        KeyCode::Char('o') => app.toggle_downloads_view(),
+        KeyCode::Char('c') if app.view == ViewMode::Downloads => {
+            // Cancel the most recent active download from the overlay.
+            if let Some(job) = app.download_jobs.iter().rev().find(|job| job.is_active()) {
+                job.request_cancel();
+                app.set_status(fmt_key(app.lang.t(Key::StatusCancelDownload), &[&job.vm]));
+            }
+        }
+        KeyCode::Enter => app.open_selected_link(),
+        _ => {}
     }
 }
 

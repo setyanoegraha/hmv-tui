@@ -5,3 +5,7 @@
 *.part
 *.ova
 .zcode/
+
+# repowise local index + machine-local MCP wiring
+.repowise/
+.mcp.json
