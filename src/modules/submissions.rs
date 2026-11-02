@@ -1,32 +1,30 @@
-//! VM submissions: the user's submitted VMs, the global queue, the
-//! submission rules, and the submit form. All endpoints require a
-//! logged-in session (`/submissions/*` redirects to `/login/`
-//! otherwise).
+//! VM submissions: the global submission queue, the submission guidelines and
+//! the submit form. All endpoints require a logged-in session.
 //!
-//! Form fields are scraped dynamically from `vm.php` (`parse_form_fields`)
-//! so the POST always matches the site's current field names; a static
-//! fallback list is used when parsing fails.
+//! Form fields are scraped dynamically from `/submit/machine` so the POST
+//! always matches the site's current field names; a static fallback list is
+//! used when parsing fails.
 
 use anyhow::Result;
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 
 use crate::modules::session::HmvSession;
 
-const SUBMISSIONS_PATH: &str = "/submissions/vm.php";
-const STATUS_PATH: &str = "/submissions/status.php";
-const RULES_PATH: &str = "/submissions/rules.php";
+const SUBMIT_PATH: &str = "/submit/machine";
+const STATUS_PATH: &str = "/submit/status";
 
-/// One row of the submissions table (status.php). The site shows every
-/// user's submissions here; "mine" = rows whose user matches the account.
+/// One row of the submissions table. The site shows every user's submissions
+/// here; "mine" = rows whose user matches the account.
 #[derive(Debug, Clone)]
 pub struct QueueEntry {
-    /// The account that submitted the VM (table's first column).
+    /// The account that submitted the VM.
     pub user: String,
     pub name: String,
+    /// ISO-8601 timestamp as printed by the site.
     pub date: String,
-    /// Raw status text from the site ("pending", "accepted", ...).
+    /// Raw status text from the site ("PENDING", "ACCEPTED", ...).
     pub status: String,
-    /// easy / medium / hard.
+    /// Easy / medium / hard.
     pub level: String,
 }
 
@@ -59,66 +57,30 @@ pub enum SubmitVerdict {
     Unknown(String),
 }
 
-/// Static fallback matching the actual vm.php form
-/// (vmname/url/flaguser/flagroot/tags/level select/notes/writeup).
+/// Static fallback matching the `/submit/machine` form.
 pub fn fallback_form_fields() -> Vec<FormField> {
+    let field = |name: &str, label: &str, required: bool| FormField {
+        name: name.into(),
+        label: label.into(),
+        kind: FieldKind::Text,
+        required,
+        value: String::new(),
+    };
     vec![
-        FormField {
-            name: "vmname".into(),
-            label: "VM name:".into(),
-            kind: FieldKind::Text,
-            required: true,
-            value: String::new(),
-        },
-        FormField {
-            name: "url".into(),
-            label: "Download URL:".into(),
-            kind: FieldKind::Text,
-            required: true,
-            value: String::new(),
-        },
-        FormField {
-            name: "flaguser".into(),
-            label: "User flag:".into(),
-            kind: FieldKind::Text,
-            required: true,
-            value: String::new(),
-        },
-        FormField {
-            name: "flagroot".into(),
-            label: "Root flag:".into(),
-            kind: FieldKind::Text,
-            required: true,
-            value: String::new(),
-        },
-        FormField {
-            name: "tags".into(),
-            label: "Tags:".into(),
-            kind: FieldKind::Text,
-            required: true,
-            value: String::new(),
-        },
+        field("name", "VM name:", true),
+        field("url", "Download URL:", true),
+        field("user_flag", "User flag:", true),
+        field("root_flag", "Root flag:", true),
+        field("tags", "Tags:", true),
         FormField {
             name: "level".into(),
             label: "Level:".into(),
-            kind: FieldKind::Select(vec!["easy".into(), "medium".into(), "hard".into()]),
+            kind: FieldKind::Select(vec!["Easy".into(), "Medium".into(), "Hard".into()]),
             required: true,
-            value: "easy".into(),
+            value: "Easy".into(),
         },
-        FormField {
-            name: "notes".into(),
-            label: "Notes:".into(),
-            kind: FieldKind::Text,
-            required: false,
-            value: String::new(),
-        },
-        FormField {
-            name: "writeup".into(),
-            label: "Writeup:".into(),
-            kind: FieldKind::Text,
-            required: true,
-            value: String::new(),
-        },
+        field("notes", "Notes (optional):", false),
+        field("writeup", "Writeup (optional):", false),
     ]
 }
 
@@ -131,31 +93,22 @@ impl SubmissionManager {
         Self { session }
     }
 
-    /// Fetches the submissions queue from status.php. When `user` is
-    /// given, only that account's rows are returned ("my submissions");
-    /// otherwise the whole queue.
-    pub async fn fetch_queue(&self, user: Option<&str>) -> Result<Vec<QueueEntry>> {
-        let html = self.session.get(STATUS_PATH).await?;
-        let all = parse_queue(&html);
-        Ok(match user {
-            Some(u) => all
-                .into_iter()
-                .filter(|e| e.user.eq_ignore_ascii_case(u))
-                .collect(),
-            None => all,
-        })
+    /// Fetches the whole submission queue.
+    pub async fn fetch_queue(&self) -> Result<Vec<QueueEntry>> {
+        let fetched = self.session.get(STATUS_PATH).await?;
+        Ok(parse_queue(&fetched.text))
     }
 
-    /// Fetches the submission rules as plain text. Network-only.
+    /// Fetches the submission guidelines as plain text. Network-only.
     pub async fn fetch_rules(&self) -> Result<String> {
-        let html = self.session.get(RULES_PATH).await?;
-        Ok(parse_rules(&html))
+        let fetched = self.session.get(SUBMIT_PATH).await?;
+        Ok(parse_rules(&fetched.text))
     }
 
-    /// Scrapes the submit form fields from vm.php.
+    /// Scrapes the submit form fields from `/submit/machine`.
     pub async fn fetch_form(&self) -> Result<Vec<FormField>> {
-        let html = self.session.get(SUBMISSIONS_PATH).await?;
-        let fields = parse_form_fields(&html);
+        let fetched = self.session.get(SUBMIT_PATH).await?;
+        let fields = parse_form_fields(&fetched.text);
         if fields.is_empty() {
             Ok(fallback_form_fields())
         } else {
@@ -170,18 +123,25 @@ impl SubmissionManager {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        let body = self.session.post_form(SUBMISSIONS_PATH, &form).await?;
-        let msg = body.to_lowercase();
-        Ok(
-            if msg.contains("success") || msg.contains("submitted") || msg.contains("correct") {
-                SubmitVerdict::Submitted
-            } else if msg.contains("error") || msg.contains("wrong") || msg.contains("not") {
-                SubmitVerdict::Rejected(body.trim().chars().take(120).collect())
-            } else {
-                SubmitVerdict::Unknown(body.trim().chars().take(120).collect())
-            },
-        )
+        let fetched = self.session.post_form(SUBMIT_PATH, &form).await?;
+        Ok(classify_submit(&fetched))
     }
+}
+
+/// Classifies the submit reply. Success is rendered in green; validation and
+/// rejection messages are red/pink.
+pub fn classify_submit(fetched: &crate::modules::session::Fetched) -> SubmitVerdict {
+    if fetched.text.contains("text-green") {
+        return SubmitVerdict::Submitted;
+    }
+    if fetched.text.contains("required")
+        || fetched.text.contains("[-]")
+        || fetched.text.contains("text-red")
+        || fetched.text.contains("text-pink")
+    {
+        return SubmitVerdict::Rejected(crate::modules::flag::fragment_text(&fetched.text, 120));
+    }
+    SubmitVerdict::Unknown(crate::modules::flag::fragment_text(&fetched.text, 120))
 }
 
 /// Extracts the editable + hidden fields of the first `<form>` on the page.
@@ -222,20 +182,17 @@ pub fn parse_form_fields(html: &str) -> Vec<FormField> {
                 el.value().attr("value").unwrap_or("").to_string(),
             )
         } else if tag == "select" {
+            // Option text is sent verbatim: the server expects "Easy", not
+            // "easy".
             let options: Vec<String> = el
                 .select(&option_sel)
-                .filter_map(|o| {
-                    o.text()
-                        .collect::<String>()
-                        .trim()
-                        .to_lowercase()
-                        .into_option_string()
-                })
+                .map(|o| o.text().collect::<String>().trim().to_string())
+                .filter(|o| !o.is_empty())
                 .collect();
             let selected = el
                 .select(&option_sel)
                 .find(|o| o.value().attr("selected").is_some())
-                .map(|o| o.text().collect::<String>().trim().to_lowercase())
+                .map(|o| o.text().collect::<String>().trim().to_string())
                 .or_else(|| options.first().cloned())
                 .unwrap_or_default();
             (FieldKind::Select(options), selected)
@@ -246,7 +203,7 @@ pub fn parse_form_fields(html: &str) -> Vec<FormField> {
             )
         };
 
-        // Best-effort label: the <label for=name> preceding the field, else
+        // Best-effort label: the `<label for=name>` on the page, else
         // prettified field name.
         let label = doc
             .select(&label_sel)
@@ -269,112 +226,80 @@ pub fn parse_form_fields(html: &str) -> Vec<FormField> {
 
 /// Turns snake_case / camelCase field names into "Field name" labels.
 fn prettify_name(name: &str) -> String {
-    let spaced = name
-        .replace('_', " ")
+    name.replace('_', " ")
         .chars()
         .enumerate()
         .map(|(i, c)| if i == 0 { c.to_ascii_uppercase() } else { c })
-        .collect::<String>();
-    spaced
+        .collect::<String>()
 }
 
-/// Helper: keeps empty option text out (trim + skip empties).
-trait IntoOptionString {
-    fn into_option_string(self) -> Option<String>;
-}
-impl IntoOptionString for String {
-    fn into_option_string(self) -> Option<String> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self)
-        }
-    }
-}
-
-/// Parses the submissions queue from status.php. Actual site structure:
-/// `th[scope=row]` holds the submitting user (profile link), then
-/// `<td>` Vm name, Date, Status, Level, and a trailing rules link cell.
+/// Parses the submissions queue. Each row repeats its values in a desktop
+/// grid and a mobile grid; only the first child element is read.
 pub fn parse_queue(html: &str) -> Vec<QueueEntry> {
     let doc = Html::parse_document(html);
-    let row_sel = match Selector::parse("table tbody tr").ok() {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    let cell_sel = Selector::parse("td").unwrap();
-    let user_sel = Selector::parse("th").unwrap();
+    let row_sel = Selector::parse("div.submission-row").unwrap();
 
     let mut out = Vec::new();
     for row in doc.select(&row_sel) {
-        let user = row
-            .select(&user_sel)
-            .next()
-            .map(|th| th.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-        let cells: Vec<String> = row
-            .select(&cell_sel)
-            .map(|c| c.text().collect::<String>().trim().to_string())
-            .collect();
-        if cells.len() < 3 || user.is_empty() {
+        let Some(grid) = row.child_elements().next() else {
+            continue;
+        };
+        let cells: Vec<String> = grid.child_elements().map(|cell| normalize(&cell)).collect();
+        if cells.len() < 6 {
             continue;
         }
         out.push(QueueEntry {
-            user,
-            name: cells[0].clone(),
-            date: cells.get(1).cloned().unwrap_or_default(),
-            status: cells.get(2).cloned().unwrap_or_default(),
-            level: cells.get(3).cloned().unwrap_or_default(),
+            user: cells[0].clone(),
+            name: cells[1].clone(),
+            level: cells[2].trim_start_matches('●').trim().to_string(),
+            date: cells[3].clone(),
+            status: cells[4].trim_start_matches('●').trim().to_string(),
         });
     }
     out
 }
 
-/// Parses the rules page. The rules render as <h1>VMs Rules</h1> followed
-/// by <dl><dt>rule</dt><dd>explanation</dd>…</dl> — everything else
-/// (nav, sidebar, greeting) is page chrome and is dropped.
+/// Parses the submission guidelines: the `<ul>` that follows the
+/// `Submission Guidelines` heading's wrapper `div`.
 pub fn parse_rules(html: &str) -> String {
     let doc = Html::parse_document(html);
+    let heading_sel = Selector::parse("h2").unwrap();
 
-    let dt_sel = Selector::parse("dt").unwrap();
-    let dd_sel = Selector::parse("dd").unwrap();
-    let dts: Vec<String> = doc
-        .select(&dt_sel)
-        .map(|el| {
-            el.text()
-                .collect::<String>()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .collect();
-    let dds: Vec<String> = doc
-        .select(&dd_sel)
-        .map(|el| {
-            el.text()
-                .collect::<String>()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .collect();
+    let Some(heading) = doc
+        .select(&heading_sel)
+        .find(|h| h.text().collect::<String>().trim() == "Submission Guidelines")
+    else {
+        return "Submission guidelines unavailable.".into();
+    };
 
-    if !dts.is_empty() {
-        let mut lines = Vec::new();
-        for (i, dt) in dts.iter().enumerate() {
-            lines.push(dt.clone());
-            if let Some(dd) = dds.get(i) {
-                if !dd.is_empty() {
-                    lines.push(format!("   {dd}"));
-                }
+    // The heading sits in an icon+title div; the guideline list is that
+    // div's next element sibling (whitespace text nodes in between).
+    let list = heading.parent().and_then(|parent| {
+        let mut node = parent.next_sibling();
+        while let Some(current) = node {
+            if let Some(element) = ElementRef::wrap(current) {
+                return (element.value().name() == "ul").then_some(element);
             }
-            lines.push(String::new());
+            node = current.next_sibling();
         }
-        return lines.join("\n");
-    }
+        None
+    });
 
-    // Fallback: whole body text (layout may change).
-    doc.root_element()
-        .text()
+    let Some(list) = list else {
+        return "Submission guidelines unavailable.".into();
+    };
+
+    let lines: Vec<String> = list
+        .child_elements()
+        .filter(|li| li.value().name() == "li")
+        .map(|li| normalize(&li.child_elements().last().unwrap_or(li)))
+        .collect();
+    lines.join("\n")
+}
+
+/// Collapses an element's text to a single normalized line.
+fn normalize(el: &ElementRef<'_>) -> String {
+    el.text()
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -384,118 +309,179 @@ pub fn parse_rules(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::session::Fetched;
 
     const QUEUE_FIXTURE: &str = r##"
-    <html><body><table><tbody>
-    <tr><th>User</th><th>Vm Name/Challenges</th><th>Date</th><th>Status</th><th>Level/Category</th></tr>
-    <tr><th scope='row'><a href='/profile/?user=tester1'>tester1</a></th><td class='font-weight-bold'>Cacti</td><td>2026-09-06 17:40:42</td><td>pending</td><td>Hard</td><td><a href='rules.php'></a></td></tr>
-    <tr><th scope='row'><a href='/profile/?user=demouser'>demouser</a></th><td>grenade</td><td>2026-09-03 09:34:59</td><td>pending</td><td>Easy</td><td><a href='rules.php'></a></td></tr>
-    <tr><th scope='row'><a href='/profile/?user=demouser'>demouser</a></th><td>ledger</td><td>2026-09-02 03:04:17</td><td>pending</td><td>Easy</td><td><a href='rules.php'></a></td></tr>
-    </tbody></table></body></html>"##;
-
-    #[test]
-    fn parses_queue_fixture() {
-        let queue = parse_queue(QUEUE_FIXTURE);
-        assert_eq!(queue.len(), 3);
-        assert_eq!(queue[0].user, "tester1");
-        assert_eq!(queue[0].name, "Cacti");
-        assert_eq!(queue[0].status, "pending");
-        assert_eq!(queue[0].level, "Hard");
-        // Filter by user returns only that account's rows.
-        let mine: Vec<&QueueEntry> = queue
-            .iter()
-            .filter(|e| e.user.eq_ignore_ascii_case("demouser"))
-            .collect();
-        assert_eq!(mine.len(), 2);
-        assert_eq!(mine[0].name, "grenade");
-        assert_eq!(mine[1].name, "ledger");
-    }
+    <html><body><section>
+    <div class="submission-row border-b border-white/[0.045] px-5 py-5">
+      <div class="hidden items-center md:grid">
+        <div class="min-w-0 truncate text-sm text-zinc-300">chinese</div>
+        <div class="min-w-0 truncate text-sm text-pink-300">Chinese1</div>
+        <div class="text-xs"><span class="text-green-400">● Easy</span></div>
+        <div class="text-xs text-zinc-600">2026-11-01T09:53:12Z</div>
+        <div class="text-xs"><span class="text-yellow-400">● PENDING</span></div>
+        <div class="min-w-0 text-xs reason"></div>
+      </div>
+      <div class="md:hidden"><div>chinese</div><div>Chinese1</div></div>
+    </div>
+    </section></body></html>"##;
 
     const FORM_FIXTURE: &str = r##"
     <html><body>
-    <form action="/submissions/vm.php" method="post">
-      <input type="hidden" name="csrf" value="tok123">
-      <label for="vmname">VM name*</label>
-      <input type="text" name="vmname" id="vmname" required>
-      <label for="level">Level*</label>
-      <select name="level" id="level" required>
-        <option>easy</option><option>medium</option><option>hard</option>
+    <form action="/submit/machine" method="POST">
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" maxlength="32">
+      <label for="url">URL</label>
+      <input id="url" name="url" type="url" maxlength="255">
+      <label for="user_flag">User Flag</label>
+      <input id="user_flag" name="user_flag" type="text">
+      <label for="root_flag">Root Flag</label>
+      <input id="root_flag" name="root_flag" type="text">
+      <label for="tags">Tags</label>
+      <input id="tags" name="tags" type="text" maxlength="120">
+      <label for="level">Level</label>
+      <select id="level" name="level">
+        <option value="Easy">Easy</option>
+        <option value="Medium">Medium</option>
+        <option value="Hard">Hard</option>
       </select>
-      <input type="text" name="dlurl" id="dlurl" required>
-      <label for="uflag">User flag*</label>
-      <input type="text" name="uflag" id="uflag" required>
-      <label for="rflag">Root flag*</label>
-      <input type="text" name="rflag" id="rflag" required>
-      <label for="wurl">Writeup URL*</label>
-      <input type="text" name="wurl" id="wurl" required>
-      <label for="tags">Tags*</label>
-      <input type="text" name="tags" id="tags" required>
       <label for="notes">Notes</label>
-      <textarea name="notes" id="notes"></textarea>
-      <input type="submit" name="go" value="Send">
+      <textarea id="notes" name="notes" rows="4" maxlength="500"></textarea>
+      <label for="writeup">Writeup</label>
+      <textarea id="writeup" name="writeup" rows="4" maxlength="500"></textarea>
+      <button type="submit">Submit VM</button>
     </form>
     </body></html>"##;
 
+    const RULES_FIXTURE: &str = r#"
+    <html><body><div>
+      <div class="mb-6 flex items-center gap-3">
+        <svg><path d="M12 3"/></svg>
+        <h2 class="text-xs font-semibold">Submission Guidelines</h2>
+      </div>
+      <ul class="space-y-4">
+        <li class="flex gap-3"><span class="text-pink-400">✓</span><span>The VM must be based on your own work.</span></li>
+        <li class="flex gap-3"><span class="text-pink-400">✓</span><span>Do not include illegal content or real data.</span></li>
+        <li class="flex gap-3"><span class="text-pink-400">✓</span><span>Ensure the VM is solvable and not brute-force only.</span></li>
+        <li class="flex gap-3"><span class="text-pink-400">✓</span><span>Test the VM before submitting.</span></li>
+        <li class="flex gap-3"><span class="text-pink-400">✓</span><span>Avoid bruteforce that takes more than 5 minutes.</span></li>
+      </ul>
+      <div><h3>Good tags examples</h3></div>
+    </div></body></html>"#;
+
+    fn fetched(text: &str) -> Fetched {
+        Fetched {
+            status: 200,
+            path: "/submit/machine".into(),
+            text: text.into(),
+        }
+    }
+
     #[test]
-    fn parses_form_fields_fixture() {
+    fn parses_queue_six_cells() {
+        let queue = parse_queue(QUEUE_FIXTURE);
+        assert_eq!(queue.len(), 1, "mobile duplicate grid must not be counted");
+        assert_eq!(queue[0].user, "chinese");
+        assert_eq!(queue[0].name, "Chinese1");
+        assert_eq!(queue[0].level, "Easy");
+        assert_eq!(queue[0].date, "2026-11-01T09:53:12Z");
+        assert_eq!(queue[0].status, "PENDING");
+    }
+
+    #[test]
+    fn parses_rules_from_guidelines_list() {
+        let rules = parse_rules(RULES_FIXTURE);
+        let lines: Vec<&str> = rules.lines().collect();
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], "The VM must be based on your own work.");
+        assert!(
+            rules.contains("Avoid bruteforce"),
+            "last rule missing: {rules}"
+        );
+        assert!(!rules.contains('✓'), "glyph must be dropped: {rules}");
+    }
+
+    #[test]
+    fn parse_rules_without_heading_degrades() {
+        assert_eq!(
+            parse_rules("<html></html>"),
+            "Submission guidelines unavailable."
+        );
+    }
+
+    #[test]
+    fn parses_form_fields_preserving_level_case() {
         let fields = parse_form_fields(FORM_FIXTURE);
         let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"csrf"));
-        assert!(names.contains(&"vmname"));
-        assert!(names.contains(&"level"));
-        assert!(names.contains(&"notes"));
-        assert!(!names.contains(&"go"), "submit button excluded");
+        assert_eq!(
+            names,
+            vec![
+                "name",
+                "url",
+                "user_flag",
+                "root_flag",
+                "tags",
+                "level",
+                "notes",
+                "writeup"
+            ]
+        );
+        assert!(!names.contains(&"submit"), "submit button excluded");
 
         let level = fields.iter().find(|f| f.name == "level").unwrap();
         match &level.kind {
-            FieldKind::Select(opts) => {
-                assert_eq!(opts.len(), 3);
-                assert!(opts.contains(&"medium".to_string()));
-            }
+            FieldKind::Select(opts) => assert_eq!(opts, &vec!["Easy", "Medium", "Hard"]),
             other => panic!("level should be a select, got {other:?}"),
         }
-        let csrf = fields.iter().find(|f| f.name == "csrf").unwrap();
-        assert!(matches!(csrf.kind, FieldKind::Hidden));
-        assert_eq!(csrf.value, "tok123");
-        let vmname = fields.iter().find(|f| f.name == "vmname").unwrap();
-        assert!(vmname.required);
-        assert_eq!(vmname.label, "VM name:");
-        let notes = fields.iter().find(|f| f.name == "notes").unwrap();
-        assert!(!notes.required);
-    }
-
-    const RULES_FIXTURE: &str = r#"
-    <html><body><div class="container">
-    <h1>VMs Rules</h1>
-    <dl>
-    <dt>1. Dont use external URLs as part of the challenge.</dt>
-    <dd>If the external URL fails, VM cannot be completed.</dd>
-    <dt>2. Avoid bruteforces that takes more than 10 mins.</dt>
-    <dd>Avoid that bruteforcing SSH, FTP etc takes more than 10 minutes.</dd>
-    </dl>
-    </div></body></html>"#;
-
-    #[test]
-    fn parses_rules_fixture() {
-        let rules = parse_rules(RULES_FIXTURE);
-        assert!(rules.contains("1. Dont use external URLs"));
-        assert!(rules.contains("If the external URL fails"));
-        assert!(rules.contains("2. Avoid bruteforces"));
-        assert!(!rules.contains("Dashboard"), "page chrome dropped");
+        assert_eq!(level.value, "Easy");
+        assert!(
+            fields.iter().all(|f| !f.required),
+            "page has no required attrs"
+        );
     }
 
     #[test]
     fn fallback_fields_cover_owner_requirements() {
         let fields = fallback_form_fields();
         let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
-        for expected in [
-            "vmname", "url", "flaguser", "flagroot", "tags", "level", "notes", "writeup",
-        ] {
-            assert!(names.contains(&expected), "missing {expected}");
+        assert_eq!(
+            names,
+            vec![
+                "name",
+                "url",
+                "user_flag",
+                "root_flag",
+                "tags",
+                "level",
+                "notes",
+                "writeup"
+            ]
+        );
+        assert!(!fields[6].required, "notes optional");
+        assert!(!fields[7].required, "writeup optional");
+        assert!(fields[..6].iter().all(|f| f.required));
+        match &fields[5].kind {
+            FieldKind::Select(opts) => assert_eq!(opts, &vec!["Easy", "Medium", "Hard"]),
+            other => panic!("level should be a select, got {other:?}"),
         }
-        let notes = fields.iter().find(|f| f.name == "notes").unwrap();
-        assert!(!notes.required, "notes optional");
-        let others = fields.iter().filter(|f| f.name != "notes").count();
-        assert_eq!(others, fields.len() - 1);
+        assert_eq!(fields[5].value, "Easy");
+    }
+
+    #[test]
+    fn classifies_submit_replies() {
+        assert!(matches!(
+            classify_submit(&fetched("<div class=\"text-green-400\">Queued</div>")),
+            SubmitVerdict::Submitted
+        ));
+        assert!(matches!(
+            classify_submit(&fetched(
+                "<div class=\"text-pink-400\">All fields are required</div>"
+            )),
+            SubmitVerdict::Rejected(_)
+        ));
+        assert!(matches!(
+            classify_submit(&fetched("<div>something else</div>")),
+            SubmitVerdict::Unknown(_)
+        ));
     }
 }
