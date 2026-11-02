@@ -13,6 +13,9 @@ async fn main() {
         None => commands::tui_cmd().await,
         Some("--version" | "-V") => {
             println!("hmv {}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "api: /login, /machines, /machine/<name>, /writeup/<name>, /submit/*, /nextreleases"
+            );
             Ok(())
         }
         Some("--help" | "-h") => {

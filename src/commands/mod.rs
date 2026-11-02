@@ -1,8 +1,6 @@
 //! Dashboard orchestration: session lifecycle, data fetching and the host
 //! closures handed to the TUI event loop.
 
-pub mod machine;
-
 use anyhow::Result;
 
 use crate::config::ConfigManager;
@@ -10,7 +8,6 @@ use crate::modules::flag::FlagManager;
 use crate::modules::machines::MachineScraper;
 use crate::modules::releases::ReleaseScraper;
 use crate::modules::session::{login, login_with, HmvSession};
-use crate::modules::stats::StatsManager;
 use crate::modules::writeups::WriteupManager;
 use crate::modules::HmvError;
 use crate::tui::{ActionReport, TuiAction, TuiData};
@@ -34,6 +31,10 @@ impl SessionCache {
 
     pub fn session(&self) -> HmvSession {
         self.session.clone()
+    }
+
+    pub fn username(&self) -> &str {
+        &self.username
     }
 }
 
@@ -134,7 +135,7 @@ pub async fn tui_cmd() -> Result<()> {
                 handle.block_on(async {
                     let manager =
                         crate::modules::submissions::SubmissionManager::new(sessions.session());
-                    let queue = manager.fetch_queue(None).await.unwrap_or_default();
+                    let queue = manager.fetch_queue().await.unwrap_or_default();
                     let rules = manager.fetch_rules().await.ok();
                     let form = manager.fetch_form().await.unwrap_or_default();
                     Ok((queue, rules, form))
@@ -190,20 +191,7 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
             use crate::tui::{ActionReport, ReportKind};
             let lang = crate::config::ConfigManager::new().language();
             let manager = crate::modules::submissions::SubmissionManager::new(sessions.session());
-            let fields: Vec<(String, String)> = action
-                .values
-                .iter()
-                .map(|(index, value)| {
-                    (
-                        crate::modules::submissions::fallback_form_fields()
-                            .get(*index)
-                            .map(|f| f.name.clone())
-                            .unwrap_or_else(|| format!("field{index}")),
-                        value.clone(),
-                    )
-                })
-                .collect();
-            let verdict = manager.submit(&fields).await?;
+            let verdict = manager.submit(&action.values).await?;
             let (entries, changed, status) = match verdict {
                 crate::modules::submissions::SubmitVerdict::Submitted => (
                     vec![(ReportKind::Success, lang.t(Key::SubmitOk).to_string())],
@@ -235,39 +223,31 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
             })
         }
         crate::tui::PopupKind::Flag => {
-            use crate::modules::flag::FlagVerdict;
-
-            if action.values.len() > 2 {
-                anyhow::bail!("A maximum of 2 flags (user & root) can be submitted.");
-            }
-
-            let vm = action.vm.clone();
-            let vm_ref = vm.as_str();
-            let sessions_ref: &SessionCache = sessions;
-            let futures = action.values.iter().map(|(field, flag)| {
-                let flag = flag.clone();
-                let vm = vm_ref;
-                async move {
-                    FlagManager::new(sessions_ref.session())
-                        .check(vm, &flag)
-                        .await
-                        .map(|verdict| (*field, verdict))
-                }
-            });
-            let results = futures_util::future::join_all(futures)
-                .await
-                .into_iter()
-                .collect::<Result<Vec<(usize, FlagVerdict)>>>()?;
-
+            let Some((_, flag)) = action.values.first() else {
+                anyhow::bail!("No flag entered.");
+            };
+            let verdict = FlagManager::new(sessions.session())
+                .check(&action.vm, flag)
+                .await?;
             let lang = crate::config::ConfigManager::new().language();
-            Ok(crate::tui::build_flag_report(lang, &action.vm, results))
+            Ok(crate::tui::build_flag_report(lang, &action.vm, verdict))
         }
         crate::tui::PopupKind::Upload => {
-            let url = action.values[0].1.clone();
+            let value = |name: &str| -> String {
+                action
+                    .values
+                    .iter()
+                    .find(|(field, _)| field == name)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            };
+            let url = value("url");
+            let kind = value("type");
+            let language = value("language");
             let lang = crate::config::ConfigManager::new().language();
             use crate::tui::{ActionReport, ReportKind};
             let verdict = WriteupManager::new(sessions.session())
-                .submit(&action.vm, &url)
+                .submit(&action.vm, &url, &kind, &language)
                 .await?;
             use crate::modules::writeups::UploadVerdict;
             let (entries, changed, status) = match verdict {
@@ -290,10 +270,13 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
                     false,
                     format!("[=] Writeup for {} was already submitted.", action.vm),
                 ),
-                UploadVerdict::Rejected => (
+                UploadVerdict::Rejected(reason) => (
                     vec![(
                         ReportKind::Failure,
-                        lang.t(crate::i18n::Key::ReportWriteupRejected).to_string(),
+                        crate::tui::fmt_key(
+                            lang.t(crate::i18n::Key::ReportWriteupRejected),
+                            &[&reason],
+                        ),
                     )],
                     false,
                     format!("[!] Server rejected writeup for {}.", action.vm),
@@ -334,43 +317,34 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
     }
 }
 
-/// Fetches every dataset the dashboard shows: profile stats + accepted
-/// writeups, and the pwned catalog for gauges & pending machines.
-/// No terminal output here — the TUI owns the screen and reports progress
-/// through its footer (`⟳ Loading data...` / `⟳ Refreshing data...`).
+/// Fetches every dataset the dashboard shows: the machine catalog (which
+/// carries per-row pwned state), the release schedule and the submission
+/// queue/form/guidelines. No terminal output here — the TUI owns the screen
+/// and reports progress through its footer.
 async fn fetch_tui_data(sessions: &SessionCache) -> Result<TuiData> {
     let session = sessions.session();
 
-    let stats = StatsManager::new(session.clone())
-        .get_stats(&sessions.username)
-        .await?;
-
-    let scraper = MachineScraper::new(session.clone());
-    let mut catalog = machine::fetch_catalog(&scraper, "all").await?;
-    machine::sync_pwned_status(&scraper, &mut catalog).await?;
+    let catalog = MachineScraper::new(session.clone()).get_catalog().await?;
 
     let total_vms = catalog.len() as u64;
-    let pwned_vms = catalog.iter().filter(|m| m.status != "TO HACK").count() as u64;
+    let pwned_vms = catalog.iter().filter(|m| m.status == "PWNED").count() as u64;
 
-    let difficulty = |name: &str| -> (u64, u64) {
-        let matching: Vec<&crate::modules::machines::Machine> = catalog
-            .iter()
-            .filter(|m| m.difficulty.eq_ignore_ascii_case(name))
-            .collect();
-        let pwned = matching.iter().filter(|m| m.status != "TO HACK").count() as u64;
+    let count = |pred: &dyn Fn(&crate::modules::machines::Machine) -> bool| -> (u64, u64) {
+        let matching: Vec<&crate::modules::machines::Machine> =
+            catalog.iter().filter(|m| pred(m)).collect();
+        let pwned = matching.iter().filter(|m| m.status == "PWNED").count() as u64;
         (pwned, matching.len() as u64)
     };
-
-    let uploaded: std::collections::HashSet<String> = stats
-        .accepted_writeups
-        .iter()
-        .map(|w| w.vm.to_lowercase())
-        .collect();
-    let pending: Vec<String> = catalog
-        .iter()
-        .filter(|m| m.status != "TO HACK" && !uploaded.contains(&m.name.to_lowercase()))
-        .map(|m| m.name.clone())
-        .collect();
+    let level = |name: &str| {
+        let needle = name.to_string();
+        count(&move |m: &crate::modules::machines::Machine| {
+            m.difficulty.eq_ignore_ascii_case(&needle)
+        })
+    };
+    let os = |name: &str| {
+        let needle = name.to_string();
+        count(&move |m: &crate::modules::machines::Machine| m.os.eq_ignore_ascii_case(&needle))
+    };
 
     // Release schedule is nice-to-have: a failure here must not blank out
     // the whole dashboard, so it degrades to an empty tab.
@@ -379,34 +353,23 @@ async fn fetch_tui_data(sessions: &SessionCache) -> Result<TuiData> {
         .await
         .unwrap_or_default();
 
-    // Submission queue + rules are nice-to-have: failures degrade to an
+    // Submission queue + guidelines are nice-to-have: failures degrade to an
     // empty tab instead of blanking out the dashboard.
     let submissions = crate::modules::submissions::SubmissionManager::new(session.clone());
-    let queue = submissions.fetch_queue(None).await.unwrap_or_default();
+    let queue = submissions.fetch_queue().await.unwrap_or_default();
     let rules = submissions.fetch_rules().await.ok();
     let form = submissions.fetch_form().await.unwrap_or_default();
 
     Ok(TuiData {
-        stats,
+        username: sessions.username().to_string(),
         progress: vec![
             ("Total VMs".to_string(), pwned_vms, total_vms),
-            (
-                "Beginner".to_string(),
-                difficulty("beginner").0,
-                difficulty("beginner").1,
-            ),
-            (
-                "Intermediate".to_string(),
-                difficulty("intermediate").0,
-                difficulty("intermediate").1,
-            ),
-            (
-                "Advanced".to_string(),
-                difficulty("advanced").0,
-                difficulty("advanced").1,
-            ),
+            ("Easy".to_string(), level("Easy").0, level("Easy").1),
+            ("Medium".to_string(), level("Medium").0, level("Medium").1),
+            ("Hard".to_string(), level("Hard").0, level("Hard").1),
+            ("Linux".to_string(), os("Linux").0, os("Linux").1),
+            ("Windows".to_string(), os("Windows").0, os("Windows").1),
         ],
-        pending,
         catalog,
         releases,
         submissions: queue,

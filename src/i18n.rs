@@ -58,8 +58,6 @@ pub enum Key {
     // Header / tabs
     HeaderDashboard,
     TabStats,
-    TabWriteups,
-    TabPending,
     TabMachines,
     TabReleases,
     TabSubmissions,
@@ -94,19 +92,6 @@ pub enum Key {
 
     // Stats tab blocks
     StatsIdentity,
-    StatsRank,
-    StatsTitle,
-    StatsCountry,
-    StatsLoved,
-    StatsAchievements,
-    StatsPoints,
-    StatsTotalRoots,
-    StatsTotalUsers,
-    StatsFirstRoots,
-    StatsFirstUsers,
-    StatsChallenges,
-    StatsWriteups,
-    StatsTrophies,
     StatsProgress,
 
     // Filter block
@@ -116,8 +101,18 @@ pub enum Key {
     // Footer fragments
     FooterJkMove,
     FooterFilter,
-    FooterEnterOpen,
     FooterWriteup,
+    UploadType,
+    UploadLanguage,
+    ReportFlagAlready,
+    HeaderPwned,
+    HeaderSubmissions,
+    StatsUser,
+    StatsMachinesLine,
+    StatsSubmissionsLine,
+    StatusNotPwnedYet,
+    StatusUploadOnlyMachines,
+    StatusWriteupsMachines,
     FooterSizeSort,
     FooterHidePwned,
     FooterFlag,
@@ -128,8 +123,6 @@ pub enum Key {
     FooterTabSwitch,
     FooterLangHint,
     FooterFilterMode,
-    CompactUser,
-    CompactRoot,
     CompactMachineNotFound,
     CompactUnknown,
 
@@ -141,7 +134,6 @@ pub enum Key {
     PopupDownload,
     PopupConfigure,
     PopupUserFlag,
-    PopupRootFlag,
     PopupWriteupUrl,
     PopupSaveTo,
     PopupUsername,
@@ -162,7 +154,6 @@ pub enum Key {
     NoticeLoginFailed,
     NoticeSwitch,
     NoticeLoggedOut,
-    NoticeOneFlagRemains,
     ReportHintRefresh,
     ReportHintClose,
     DirectoriesMore,
@@ -178,8 +169,6 @@ pub enum Key {
     WriteupsPopupHint,
     ColDate,
     ColAuthor,
-    ColLanguage,
-    ColFormat,
     ColLink,
 
     // Table headers
@@ -188,9 +177,7 @@ pub enum Key {
     ColCreator,
     ColSize,
     ColOs,
-    ColCompat,
     ColStatus,
-    NoCompat,
 
     // Downloads overlay
     DownloadsTitle,
@@ -219,14 +206,11 @@ pub enum Key {
     StatusCancelDownload,
 
     // Statuses — machines tab
-    StatusHidePwnedOnly,
     StatusPwnedHidden,
     StatusPwnedShown,
     StatusSortOnly,
     StatusFlagOnlyMachines,
     StatusDownloadOnlyMachines,
-    StatusUploadOnlyPending,
-    StatusWriteupsTabs,
 
     // Statuses — popups & downloads
     StatusLangSwitched,
@@ -234,7 +218,6 @@ pub enum Key {
     StatusDownloadQueued,
     StatusDownloadFailed,
     StatusQueuedFlag,
-    StatusQueuedFlags,
     StatusQueuedWriteup,
     StatusQueuedDownload,
     StatusNoWriteups,
@@ -251,25 +234,15 @@ pub enum Key {
 
     // Quit warning
     QuitWarnDownloads,
-
     // Header counters & tab bodies
-    HeaderPoints,
-    HeaderWriteups,
-    HeaderPending,
-    PendingItemSuffix,
-    PendingEmpty,
-    ReleaseReleased,
-    ReleaseUpcoming,
 }
 
 fn en(key: Key) -> &'static str {
     use Key::*;
     match key {
         // Header / tabs
-        HeaderDashboard => " HackMyVM dashboard",
+        HeaderDashboard => "dashboard",
         TabStats => "Stats",
-        TabWriteups => "Writeups",
-        TabPending => "Pending",
         TabMachines => "Machines",
         TabReleases => "Releases",
         TabSubmissions => "Submissions",
@@ -280,7 +253,7 @@ fn en(key: Key) -> &'static str {
         SubmitUrl => "Download URL:",
         SubmitUserFlag => "User flag:",
         SubmitRootFlag => "Root flag:",
-        SubmitWriteup => "Writeup URL:",
+        SubmitWriteup => "Writeup (optional):",
         SubmitTags => "Tags:",
         SubmitNotes => "Notes (optional):",
         SubmitFormNotice => "Read the rules (i) before submitting.",
@@ -291,7 +264,7 @@ fn en(key: Key) -> &'static str {
         SubmitUnknown => "[?] Unknown response: {}",
         SubmitRequiredMissing => "Required fields missing: {}",
         SubmitInvalidLevel => "Level must be easy, medium, or hard.",
-        RulesTitle => " Submission rules ",
+        RulesTitle => " Submission guidelines ",
         RulesUnavailable => "Rules unavailable — try refreshing.",
         FetchingForm => "Loading submission form...",
         FooterSubmitVm => "v submit VM",
@@ -306,34 +279,29 @@ fn en(key: Key) -> &'static str {
         FooterJkMove => "jk move",
         // Stats blocks
         StatsIdentity => "[ Identity ]",
-        StatsRank => "  Rank      : ",
-        StatsTitle => "  Title     : ",
-        StatsCountry => "  Country   : ",
-        StatsLoved => "  Loved     : ",
-        StatsAchievements => "[ Achievements ]",
-        StatsPoints => "  Points      : ",
-        StatsTotalRoots => "  Total Roots : ",
-        StatsTotalUsers => "  Total Users : ",
-        StatsFirstRoots => "  First Roots : ",
-        StatsFirstUsers => "  First Users : ",
-        StatsChallenges => "  Challenges  : ",
-        StatsWriteups => "  Writeups    : ",
-        StatsTrophies => "[ Trophies ] ({})",
         StatsProgress => "[ Progress ]",
 
         // Filter block
         FilterLabel => " filter: ",
         PwnedHiddenIndicator => " · PWNED hidden (h)",
 
-        CompactUser => "User",
-        CompactRoot => "Root",
         CompactMachineNotFound => "machine not found",
         CompactUnknown => "unknown",
 
         // Footer fragments
         FooterFilter => "/ filter",
-        FooterEnterOpen => "Enter open",
-        FooterWriteup => "u writeup",
+        FooterWriteup => "w writeups · u upload",
+        UploadType => "Type:",
+        UploadLanguage => "Language:",
+        ReportFlagAlready => "VM already pwned.",
+        HeaderPwned => "{} / {} pwned",
+        HeaderSubmissions => "{} submissions",
+        StatsUser => "  User        : ",
+        StatsMachinesLine => "  Machines    : ",
+        StatsSubmissionsLine => "  Submissions : ",
+        StatusNotPwnedYet => "Submit a writeup only after pawning the machine.",
+        StatusUploadOnlyMachines => "Writeup upload is only available on the Machines tab.",
+        StatusWriteupsMachines => "Community writeups are only available on the Machines tab.",
         FooterSizeSort => "s size sort",
         FooterHidePwned => "h hide PWNED",
         FooterFlag => "f flag",
@@ -352,13 +320,12 @@ fn en(key: Key) -> &'static str {
         PopupSubmitWriteup => " Submit writeup — {} ",
         PopupDownload => " Download — {} ",
         PopupConfigure => " Configure HackMyVM ",
-        PopupUserFlag => "User flag:",
-        PopupRootFlag => "Root flag:",
+        PopupUserFlag => "Flag:",
         PopupWriteupUrl => "Writeup URL:",
         PopupSaveTo => "Save to:",
         PopupUsername => "Username:",
         PopupPassword => "Password:",
-        PopupHintFlag => "Enter send both · ↑↓/Tab switch field · Esc cancel",
+        PopupHintFlag => "Enter send · Esc cancel",
         PopupHintSend => "Enter send · Esc cancel",
         PopupHintDownload => "Tab complete path · Enter start · Esc cancel",
         PopupHintConfig => "Enter save & connect · ↑↓/Tab switch field · Esc quit",
@@ -374,7 +341,6 @@ fn en(key: Key) -> &'static str {
         NoticeLoginFailed => "Login failed — re-enter your HackMyVM credentials.",
         NoticeSwitch => "Switch account — enter the new credentials.",
         NoticeLoggedOut => "Logged out — sign in with your HackMyVM account.",
-        NoticeOneFlagRemains => "One flag already submitted — one remains.",
         ReportHintRefresh => "Data will refresh on close · Enter / Esc close",
         ReportHintClose => "Enter / Esc close",
         DirectoriesMore => "  … and {} more",
@@ -383,9 +349,7 @@ fn en(key: Key) -> &'static str {
         WriteupsPopupTitle => " Writeups — {} ",
         WriteupsPopupHint => "Enter open link · jk select · Esc close",
         ColDate => "Date",
-        ColAuthor => "Author (Poet)",
-        ColLanguage => "Language",
-        ColFormat => "Format",
+        ColAuthor => "Author",
         ColLink => "Link",
 
         // Table headers
@@ -394,9 +358,7 @@ fn en(key: Key) -> &'static str {
         ColCreator => "Creator",
         ColSize => "Size",
         ColOs => "OS",
-        ColCompat => "Tested",
         ColStatus => "Status",
-        NoCompat => "-",
 
         // Downloads overlay
         DownloadsTitle => " Downloads ",
@@ -427,14 +389,11 @@ fn en(key: Key) -> &'static str {
         StatusCancelDownload => "Cancelling {}...",
 
         // Statuses — machines tab
-        StatusHidePwnedOnly => "Hide PWNED is only available on the Machines tab.",
         StatusPwnedHidden => "PWNED machines hidden — press h to show them again.",
         StatusPwnedShown => "PWNED machines shown.",
         StatusSortOnly => "Size sort is only available on the Machines tab.",
         StatusFlagOnlyMachines => "Flag submission is only available on the Machines tab.",
         StatusDownloadOnlyMachines => "Downloads are only available on the Machines tab.",
-        StatusUploadOnlyPending => "Writeup submission is only available on the Pending tab.",
-        StatusWriteupsTabs => "Writeups are available on the Machines and Pending tabs.",
 
         // Statuses — popups & downloads
         StatusLangSwitched => "Language switched to {}. · l to toggle again",
@@ -442,14 +401,13 @@ fn en(key: Key) -> &'static str {
         StatusDownloadQueued => "[↓] {} queued — {} downloads active.",
         StatusDownloadFailed => "Download failed: {}",
         StatusQueuedFlag => "Queued flag for {}...",
-        StatusQueuedFlags => "Queued flags for {}...",
         StatusQueuedWriteup => "Queued writeup URL for {}...",
         StatusQueuedDownload => "Queued download for {}...",
         StatusNoWriteups => "No community writeups found for {}.",
 
         // Report entries
-        ReportFlagAccepted => "{}: ✓ ACCEPTED",
-        ReportFlagRejected => "{}: ✗ REJECTED",
+        ReportFlagAccepted => "Flag: ✓ ACCEPTED",
+        ReportFlagRejected => "Flag: ✗ WRONG",
         ReportMachineNotFound => "Machine '{}' not found",
         ReportUnknownResponse => "Unknown response: {}",
         ReportYouHacked => "[✓] You hacked {}!",
@@ -465,15 +423,7 @@ fn en(key: Key) -> &'static str {
         FetchingFlag => "Submitting flag for {}...",
         FetchingWriteup => "Submitting writeup for {}...",
         FetchingWriteupsList => "Loading writeups for {}...",
-
         // Header counters & tab bodies
-        HeaderPoints => "{} pts",
-        HeaderWriteups => "{} writeups",
-        HeaderPending => "{} pending",
-        PendingItemSuffix => "  — pwned, writeup not submitted",
-        PendingEmpty => "Nothing pending — every pwned machine has an accepted writeup!",
-        ReleaseReleased => "RELEASED",
-        ReleaseUpcoming => "UPCOMING",
     }
 }
 
@@ -481,28 +431,13 @@ fn es(key: Key) -> &'static str {
     use Key::*;
     match key {
         // Header / tabs
-        HeaderDashboard => " HackMyVM panel",
+        HeaderDashboard => "panel",
         TabStats => "Estadísticas",
-        TabWriteups => "Writeups",
-        TabPending => "Pendientes",
         TabMachines => "Máquinas",
         TabReleases => "Lanzamientos",
 
         // Stats blocks
         StatsIdentity => "[ Identidad ]",
-        StatsRank => "  Rango       : ",
-        StatsTitle => "  Título      : ",
-        StatsCountry => "  País        : ",
-        StatsLoved => "  Favoritos   : ",
-        StatsAchievements => "[ Logros ]",
-        StatsPoints => "  Puntos        : ",
-        StatsTotalRoots => "  Roots totales : ",
-        StatsTotalUsers => "  Users totales : ",
-        StatsFirstRoots => "  FirstRoots    : ",
-        StatsFirstUsers => "  FirstUsers    : ",
-        StatsChallenges => "  Challenges    : ",
-        StatsWriteups => "  Writeups      : ",
-        StatsTrophies => "[ Trofeos ] ({})",
         StatsProgress => "[ Progreso ]",
 
         // Filter block
@@ -512,8 +447,20 @@ fn es(key: Key) -> &'static str {
         // Footer fragments
         FooterJkMove => "jk mover",
         FooterFilter => "/ filtrar",
-        FooterEnterOpen => "Enter abrir",
-        FooterWriteup => "u writeup",
+        FooterWriteup => "w writeups · u subir",
+        UploadType => "Tipo:",
+        UploadLanguage => "Idioma:",
+        ReportFlagAlready => "VM ya pwned.",
+        HeaderPwned => "{} / {} pwned",
+        HeaderSubmissions => "{} envíos",
+        StatsUser => "  Usuario     : ",
+        StatsMachinesLine => "  Máquinas    : ",
+        StatsSubmissionsLine => "  Envíos      : ",
+        StatusNotPwnedYet => "Envía un writeup solo tras pwning la máquina.",
+        StatusUploadOnlyMachines => {
+            "La subida de writeups solo está disponible en la pestaña Máquinas."
+        }
+        StatusWriteupsMachines => "Los writeups de la comunidad solo están en la pestaña Máquinas.",
         FooterSizeSort => "s orden tamaño",
         FooterHidePwned => "h ocultar PWNED",
         FooterFlag => "f flag",
@@ -532,7 +479,7 @@ fn es(key: Key) -> &'static str {
         SubmitUrl => "URL de descarga:",
         SubmitUserFlag => "Flag user:",
         SubmitRootFlag => "Flag root:",
-        SubmitWriteup => "URL del writeup:",
+        SubmitWriteup => "Writeup (opcional):",
         SubmitTags => "Tags:",
         SubmitNotes => "Notas (opcional):",
         SubmitFormNotice => "Lee las reglas (i) antes de enviar.",
@@ -543,7 +490,7 @@ fn es(key: Key) -> &'static str {
         SubmitUnknown => "[?] Respuesta desconocida: {}",
         SubmitRequiredMissing => "Faltan campos obligatorios: {}",
         SubmitInvalidLevel => "El nivel debe ser easy, medium o hard.",
-        RulesTitle => " Reglas de envío ",
+        RulesTitle => " Normas de envío ",
         RulesUnavailable => "Reglas no disponibles — prueba a refrescar.",
         FetchingForm => "Cargando formulario de envío...",
         FooterSubmitVm => "v enviar VM",
@@ -553,8 +500,6 @@ fn es(key: Key) -> &'static str {
         StatusSubmitOnlySubmissions => {
             "Las acciones de envío solo están disponibles en la pestaña Envíos."
         }
-        CompactUser => "User",
-        CompactRoot => "Root",
         CompactMachineNotFound => "máquina no encontrada",
         CompactUnknown => "desconocido",
 
@@ -565,13 +510,12 @@ fn es(key: Key) -> &'static str {
         PopupSubmitWriteup => " Enviar writeup — {} ",
         PopupDownload => " Descarga — {} ",
         PopupConfigure => " Configurar HackMyVM ",
-        PopupUserFlag => "Flag user:",
-        PopupRootFlag => "Flag root:",
+        PopupUserFlag => "Flag:",
         PopupWriteupUrl => "URL del writeup:",
         PopupSaveTo => "Guardar en:",
         PopupUsername => "Usuario:",
         PopupPassword => "Contraseña:",
-        PopupHintFlag => "Enter enviar ambas · ↑↓/Tab cambiar campo · Esc cancelar",
+        PopupHintFlag => "Enter enviar · Esc cancelar",
         PopupHintSend => "Enter enviar · Esc cancelar",
         PopupHintDownload => "Tab completar ruta · Enter iniciar · Esc cancelar",
         PopupHintConfig => "Enter guardar y conectar · ↑↓/Tab cambiar campo · Esc salir",
@@ -587,7 +531,6 @@ fn es(key: Key) -> &'static str {
         NoticeLoginFailed => "Login fallido — vuelve a introducir tus credenciales de HackMyVM.",
         NoticeSwitch => "Cambiar de cuenta — introduce las nuevas credenciales.",
         NoticeLoggedOut => "Sesión cerrada — inicia sesión con tu cuenta de HackMyVM.",
-        NoticeOneFlagRemains => "Ya se envió una flag — falta una.",
         ReportHintRefresh => "Los datos se actualizarán al cerrar · Enter / Esc cerrar",
         ReportHintClose => "Enter / Esc cerrar",
         DirectoriesMore => "  … y {} más",
@@ -596,9 +539,7 @@ fn es(key: Key) -> &'static str {
         WriteupsPopupTitle => " Writeups — {} ",
         WriteupsPopupHint => "Enter abrir enlace · jk seleccionar · Esc cerrar",
         ColDate => "Fecha",
-        ColAuthor => "Autor (Poet)",
-        ColLanguage => "Idioma",
-        ColFormat => "Formato",
+        ColAuthor => "Autor",
         ColLink => "Enlace",
 
         // Table headers
@@ -607,9 +548,7 @@ fn es(key: Key) -> &'static str {
         ColCreator => "Creador",
         ColSize => "Tamaño",
         ColOs => "SO",
-        ColCompat => "Probada",
         ColStatus => "Estado",
-        NoCompat => "-",
 
         // Downloads overlay
         DownloadsTitle => " Descargas ",
@@ -640,19 +579,12 @@ fn es(key: Key) -> &'static str {
         StatusCancelDownload => "Cancelando {}...",
 
         // Statuses — machines tab
-        StatusHidePwnedOnly => "Ocultar PWNED solo está disponible en la pestaña Máquinas.",
         StatusPwnedHidden => "Máquinas PWNED ocultas — pulsa h para mostrarlas otra vez.",
         StatusPwnedShown => "Máquinas PWNED visibles.",
         StatusSortOnly => "El orden por tamaño solo está disponible en la pestaña Máquinas.",
         StatusFlagOnlyMachines => "El envío de flags solo está disponible en la pestaña Máquinas.",
         StatusDownloadOnlyMachines => {
             "Las descargas solo están disponibles en la pestaña Máquinas."
-        }
-        StatusUploadOnlyPending => {
-            "El envío de writeups solo está disponible en la pestaña Pendientes."
-        }
-        StatusWriteupsTabs => {
-            "Los writeups están disponibles en las pestañas Máquinas y Pendientes."
         }
 
         // Statuses — popups & downloads
@@ -661,14 +593,13 @@ fn es(key: Key) -> &'static str {
         StatusDownloadQueued => "[↓] {} en cola — {} descargas activas.",
         StatusDownloadFailed => "Descarga fallida: {}",
         StatusQueuedFlag => "Flag en cola para {}...",
-        StatusQueuedFlags => "Flags en cola para {}...",
         StatusQueuedWriteup => "Writeup en cola para {}...",
         StatusQueuedDownload => "Descarga en cola para {}...",
         StatusNoWriteups => "No se encontraron writeups de la comunidad para {}.",
 
         // Report entries
-        ReportFlagAccepted => "{}: ✓ ACEPTADA",
-        ReportFlagRejected => "{}: ✗ RECHAZADA",
+        ReportFlagAccepted => "Flag: ✓ ACEPTADA",
+        ReportFlagRejected => "Flag: ✗ INCORRECTA",
         ReportMachineNotFound => "Máquina '{}' no encontrada",
         ReportUnknownResponse => "Respuesta desconocida: {}",
         ReportYouHacked => "[✓] ¡Has hackeado {}!",
@@ -682,17 +613,6 @@ fn es(key: Key) -> &'static str {
         FetchingWriteupsList => "Cargando writeups de {}...",
         ReportWriteupRepeated => "Writeup: [=] YA ENVIADO",
         ReportWriteupRejected => "Writeup: ✗ RECHAZADO — ¿faltan flags?",
-
-        // Header counters & tab bodies
-        HeaderPoints => "{} pts",
-        HeaderWriteups => "{} writeups",
-        HeaderPending => "{} pendientes",
-        PendingItemSuffix => "  — comprometida, writeup no enviado",
-        PendingEmpty => {
-            "¡Nada pendiente — todas las máquinas comprometidas tienen un writeup aceptado!"
-        }
-        ReleaseReleased => "LANZADA",
-        ReleaseUpcoming => "PRÓXIMA",
     }
 }
 
@@ -723,7 +643,7 @@ mod tests {
             Key::StatusPwnedHidden,
             Key::ColDifficulty,
             Key::FooterQuit,
-            Key::PopupUserFlag,
+            Key::UploadLanguage,
         ];
         for key in keys {
             assert_ne!(

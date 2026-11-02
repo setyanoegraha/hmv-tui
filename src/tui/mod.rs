@@ -16,9 +16,22 @@ use crate::i18n::{Key, Lang};
 use crate::modules::flag::FlagVerdict;
 use crate::modules::machines::Machine;
 use crate::modules::releases::Release;
-use crate::modules::stats::{ProfileStats, ProfileWriteup};
 use crate::modules::submissions::{FieldKind, FormField, QueueEntry};
 use crate::modules::writeups::Writeup;
+
+/// Writeup types offered by `/writeup/<Name>`.
+pub const UPLOAD_TYPES: [&str; 2] = ["Text", "Video"];
+/// Writeup languages offered by `/writeup/<Name>`.
+pub const UPLOAD_LANGUAGES: [&str; 8] = [
+    "English",
+    "Spanish",
+    "Catalan",
+    "French",
+    "German",
+    "Italian",
+    "Portuguese",
+    "Other",
+];
 
 /// What a popup asks the user for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,15 +59,17 @@ pub enum ConfigContext {
     LoggedOut,
 }
 
-/// A text-input popup bound to one machine. The Flag popup carries two
-/// fields (user & root); Upload has one. Read-only popups (already-PWNED
-/// machines) render as an info box and cannot submit anything.
+/// A text-input popup bound to one machine. The Flag popup carries one
+/// field; Upload has three (URL + type + language select). Read-only popups
+/// (already-PWNED machines) render as an info box and cannot submit.
 #[derive(Debug, Clone)]
 pub struct Popup {
     pub kind: PopupKind,
     pub vm: String,
     pub buffers: Vec<String>,
     pub field: usize,
+    /// Locked option list per buffer (select fields); `None` = free text.
+    pub selects: Vec<Option<Vec<String>>>,
     /// Yellow banner rendered above the fields (e.g. one flag already in).
     pub notice: Option<String>,
     /// Info-only popup: no fields, Enter/Esc just closes it.
@@ -234,30 +249,26 @@ pub enum HostOutcome {
 /// Identifies the selected row of one tab so `set_data` can restore the
 enum SelectionKey {
     Machine(String),
-    Pending(String),
-    Writeup { vm: String, url: String },
     Release(String),
     Submission { name: String, user: String },
 }
 
 /// A user action queued from a popup, executed by the host application.
-/// `values` carries `(original field index, value)` so verdicts can be
-/// labeled with the field they came from (User flag / Root flag); uploads
-/// always carry exactly one URL.
+/// `values` carries `(form field name, value)` — flag submissions carry
+/// `("flag", …)`, writeup uploads `("url"|"type"|"language", …)`.
 #[derive(Debug, Clone)]
 pub struct TuiAction {
     pub kind: PopupKind,
     pub vm: String,
-    pub values: Vec<(usize, String)>,
+    pub values: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TuiData {
-    pub stats: ProfileStats,
+    /// Account shown in the header and used to mark "my" submissions.
+    pub username: String,
     /// (label, pwned, total) rows for the progress gauges.
     pub progress: Vec<(String, u64, u64)>,
-    /// Machines fully pwned (user+root flags) without an accepted writeup.
-    pub pending: Vec<String>,
     /// Full machine catalog for the Machines tab.
     pub catalog: Vec<Machine>,
     /// Upcoming machine release schedule (Releases tab).
@@ -266,7 +277,7 @@ pub struct TuiData {
     pub submissions: Vec<QueueEntry>,
     /// Scraped submit-form fields (cached for the submit popup).
     pub submission_form: Vec<FormField>,
-    /// Submission rules text (Submissions tab info popup).
+    /// Submission guidelines text (info popup).
     pub rules: Option<String>,
 }
 
@@ -274,9 +285,8 @@ impl TuiData {
     /// Placeholder shown while the first fetch is still running.
     pub fn empty() -> Self {
         Self {
-            stats: ProfileStats::default(),
+            username: String::new(),
             progress: Vec::new(),
-            pending: Vec::new(),
             catalog: Vec::new(),
             releases: Vec::new(),
             submissions: Vec::new(),
@@ -328,22 +338,13 @@ impl WriteupsPopup {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Stats,
-    Writeups,
-    Pending,
     Machines,
     Releases,
     Submissions,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [
-        Tab::Stats,
-        Tab::Writeups,
-        Tab::Pending,
-        Tab::Machines,
-        Tab::Releases,
-        Tab::Submissions,
-    ];
+    pub const ALL: [Tab; 4] = [Tab::Stats, Tab::Machines, Tab::Releases, Tab::Submissions];
 
     fn next(self) -> Self {
         let index = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
@@ -629,18 +630,6 @@ impl AppState {
                 .visible_machines()
                 .get(self.selected)
                 .map(|m| SelectionKey::Machine(m.name.clone())),
-            Tab::Pending => self
-                .visible_pending()
-                .get(self.selected)
-                .map(|vm| SelectionKey::Pending((*vm).clone())),
-            Tab::Writeups => {
-                self.visible_writeups()
-                    .get(self.selected)
-                    .map(|w| SelectionKey::Writeup {
-                        vm: w.vm.clone(),
-                        url: w.url.clone(),
-                    })
-            }
             Tab::Releases => self
                 .visible_releases()
                 .get(self.selected)
@@ -664,11 +653,6 @@ impl AppState {
             SelectionKey::Machine(name) => {
                 self.visible_machines().iter().position(|m| &m.name == name)
             }
-            SelectionKey::Pending(vm) => self.visible_pending().iter().position(|v| *v == vm),
-            SelectionKey::Writeup { vm, url } => self
-                .visible_writeups()
-                .iter()
-                .position(|w| &w.vm == vm && &w.url == url),
             SelectionKey::Release(name) => {
                 self.visible_releases().iter().position(|r| &r.name == name)
             }
@@ -692,32 +676,6 @@ impl AppState {
     fn reset_list_position(&mut self) {
         self.selected = 0;
         self.scroll = 0;
-    }
-
-    /// Lowercase-filtered accepted writeups for the Writeups tab.
-    pub fn visible_writeups(&self) -> Vec<&ProfileWriteup> {
-        let needle = self.filter.to_lowercase();
-        self.data
-            .stats
-            .accepted_writeups
-            .iter()
-            .filter(|w| {
-                needle.is_empty()
-                    || w.vm.to_lowercase().contains(&needle)
-                    || w.language.to_lowercase().contains(&needle)
-                    || w.url.to_lowercase().contains(&needle)
-            })
-            .collect()
-    }
-
-    /// Lowercase-filtered pending machine names for the Pending tab.
-    pub fn visible_pending(&self) -> Vec<&String> {
-        let needle = self.filter.to_lowercase();
-        self.data
-            .pending
-            .iter()
-            .filter(|vm| needle.is_empty() || vm.to_lowercase().contains(&needle))
-            .collect()
     }
 
     /// Lowercase-filtered machine catalog for the Machines tab. Filter
@@ -744,13 +702,13 @@ impl AppState {
         match self.machine_sort {
             MachineSort::Default => {}
             MachineSort::SizeAsc => machines.sort_by(|a, b| {
-                crate::modules::machines::size_mb(&a.size)
-                    .partial_cmp(&crate::modules::machines::size_mb(&b.size))
+                crate::modules::machines::size_gb(&a.size)
+                    .partial_cmp(&crate::modules::machines::size_gb(&b.size))
                     .unwrap_or(std::cmp::Ordering::Equal)
             }),
             MachineSort::SizeDesc => machines.sort_by(|a, b| {
-                crate::modules::machines::size_mb(&b.size)
-                    .partial_cmp(&crate::modules::machines::size_mb(&a.size))
+                crate::modules::machines::size_gb(&b.size)
+                    .partial_cmp(&crate::modules::machines::size_gb(&a.size))
                     .unwrap_or(std::cmp::Ordering::Equal)
             }),
         }
@@ -761,7 +719,7 @@ impl AppState {
     /// that tab like the other machine actions.
     pub fn toggle_hide_pwned(&mut self) {
         if self.tab != Tab::Machines {
-            self.set_status(self.lang.t(Key::StatusHidePwnedOnly));
+            self.set_status(self.lang.t(Key::StatusSortOnly));
             return;
         }
         self.hide_pwned = !self.hide_pwned;
@@ -823,7 +781,7 @@ impl AppState {
                 needle.is_empty()
                     || r.name.to_lowercase().contains(&needle)
                     || r.date.to_lowercase().contains(&needle)
-                    || r.os.to_lowercase().contains(&needle)
+                    || r.level.to_lowercase().contains(&needle)
             })
             .collect()
     }
@@ -841,10 +799,6 @@ impl AppState {
                 .visible_machines()
                 .get(self.selected)
                 .map(|m| m.name.clone()),
-            Tab::Pending => self
-                .visible_pending()
-                .get(self.selected)
-                .map(|vm| (*vm).clone()),
             _ => None,
         }
     }
@@ -857,10 +811,10 @@ impl AppState {
         self.visible_machines().get(self.selected).copied()
     }
 
-    /// Opens the input popup for the given action. Actions are gated per
-    /// tab: flags belong on Machines, writeups on Pending. Flag popups are
-    /// status-aware: PWNED machines get a read-only info box, DONE ones a
-    /// "one flag remains" notice.
+    /// Opens the input popup for the given action. Everything is gated to the
+    /// Machines tab. Flag popups on a PWNED machine become a read-only info
+    /// box; writeup uploads require the machine to be PWNED first (the server
+    /// bounces anyone else).
     pub fn open_action_popup(&mut self, kind: PopupKind) {
         if self.fetching.is_some() {
             self.set_status(self.lang.t(Key::StatusBusy));
@@ -875,15 +829,14 @@ impl AppState {
             return;
         }
         let allowed = match kind {
-            PopupKind::Flag | PopupKind::Download => self.tab == Tab::Machines,
-            PopupKind::Upload => self.tab == Tab::Pending,
+            PopupKind::Flag | PopupKind::Download | PopupKind::Upload => self.tab == Tab::Machines,
             PopupKind::SubmissionForm | PopupKind::Rules => self.tab == Tab::Submissions,
             PopupKind::Config | PopupKind::Account => false, // managed elsewhere
         };
         if !allowed {
             self.set_status(match kind {
                 PopupKind::Flag => self.lang.t(Key::StatusFlagOnlyMachines),
-                PopupKind::Upload => self.lang.t(Key::StatusUploadOnlyPending),
+                PopupKind::Upload => self.lang.t(Key::StatusUploadOnlyMachines),
                 PopupKind::Download => self.lang.t(Key::StatusDownloadOnlyMachines),
                 PopupKind::SubmissionForm | PopupKind::Rules => {
                     self.lang.t(Key::StatusSubmitOnlySubmissions)
@@ -909,23 +862,50 @@ impl AppState {
                     vm,
                     buffers: Vec::new(),
                     field: 0,
+                    selects: Vec::new(),
                     notice: None,
                     readonly: true,
                     completions: Vec::new(),
                 });
                 return;
             }
-            let notice = if status.contains("DONE") {
-                Some(self.lang.t(Key::NoticeOneFlagRemains).to_string())
-            } else {
-                None
-            };
             self.popup = Some(Popup {
                 kind,
                 vm,
-                buffers: vec![String::new(), String::new()],
+                buffers: vec![String::new()],
                 field: 0,
-                notice,
+                selects: vec![None],
+                notice: None,
+                readonly: false,
+                completions: Vec::new(),
+            });
+            return;
+        }
+
+        if kind == PopupKind::Upload {
+            let pwned = self
+                .selected_machine()
+                .map(|m| m.status == "PWNED")
+                .unwrap_or(false);
+            if !pwned {
+                self.set_status(self.lang.t(Key::StatusNotPwnedYet));
+                return;
+            }
+            self.popup = Some(Popup {
+                kind,
+                vm,
+                buffers: vec![
+                    String::new(),
+                    UPLOAD_TYPES[0].into(),
+                    UPLOAD_LANGUAGES[0].into(),
+                ],
+                field: 0,
+                selects: vec![
+                    None,
+                    Some(UPLOAD_TYPES.iter().map(|s| s.to_string()).collect()),
+                    Some(UPLOAD_LANGUAGES.iter().map(|s| s.to_string()).collect()),
+                ],
+                notice: None,
                 readonly: false,
                 completions: Vec::new(),
             });
@@ -942,6 +922,7 @@ impl AppState {
                 vm,
                 buffers: vec![prefill.display().to_string()],
                 field: 0,
+                selects: vec![None],
                 notice: None,
                 readonly: false,
                 completions: Vec::new(),
@@ -954,6 +935,7 @@ impl AppState {
             vm,
             buffers: vec![String::new()],
             field: 0,
+            selects: vec![None],
             notice: None,
             readonly: false,
             completions: Vec::new(),
@@ -977,6 +959,7 @@ impl AppState {
             vm: String::new(),
             buffers: vec![username.unwrap_or_default().to_string(), String::new()],
             field: 0,
+            selects: vec![None, None],
             notice: Some(notice.to_string()),
             readonly: false,
             completions: Vec::new(),
@@ -1000,9 +983,10 @@ impl AppState {
         }
         self.popup = Some(Popup {
             kind: PopupKind::Account,
-            vm: self.data.stats.username.clone(),
+            vm: self.data.username.clone(),
             buffers: Vec::new(),
             field: 0,
+            selects: Vec::new(),
             notice: None,
             readonly: true,
             completions: Vec::new(),
@@ -1014,7 +998,7 @@ impl AppState {
     /// dashboard keeps showing the current account until the switch
     /// succeeds (a failure just reopens the login popup).
     pub fn begin_account_switch(&mut self) {
-        let username = self.data.stats.username.clone();
+        let username = self.data.username.clone();
         self.popup = None;
         self.open_config_popup(ConfigContext::Switch, Some(&username));
     }
@@ -1038,17 +1022,27 @@ impl AppState {
             self.pending_submissions = true;
             return;
         }
-        let buffers = self
+        let buffers: Vec<String> = self
             .data
             .submission_form
             .iter()
             .map(|f| f.value.clone())
+            .collect();
+        let selects: Vec<Option<Vec<String>>> = self
+            .data
+            .submission_form
+            .iter()
+            .map(|f| match &f.kind {
+                FieldKind::Select(options) => Some(options.clone()),
+                _ => None,
+            })
             .collect();
         self.popup = Some(Popup {
             kind: PopupKind::SubmissionForm,
             vm: String::new(),
             buffers,
             field: 0,
+            selects,
             notice: Some(self.lang.t(Key::SubmitFormNotice).to_string()),
             readonly: false,
             completions: Vec::new(),
@@ -1074,6 +1068,7 @@ impl AppState {
             vm: String::new(),
             buffers: vec![text],
             field: 0,
+            selects: vec![None],
             notice: None,
             readonly: true,
             completions: Vec::new(),
@@ -1091,8 +1086,8 @@ impl AppState {
         if self.writeups_popup.is_some() || self.popup.is_some() || self.report.is_some() {
             return;
         }
-        if !matches!(self.tab, Tab::Machines | Tab::Pending) {
-            self.set_status(self.lang.t(Key::StatusWriteupsTabs));
+        if self.tab != Tab::Machines {
+            self.set_status(self.lang.t(Key::StatusWriteupsMachines));
             return;
         }
         let Some(vm) = self.selected_machine_name() else {
@@ -1126,6 +1121,42 @@ impl AppState {
         self.writeups_popup = None;
     }
 
+    /// Pairs each non-empty popup buffer with the form field name it
+    /// represents. Flag and Upload use fixed names; the submission form uses
+    /// the scraped field names, which differ from the static fallback list.
+    fn action_values(popup: &Popup, form: &[FormField]) -> Vec<(String, String)> {
+        popup
+            .buffers
+            .iter()
+            .enumerate()
+            .map(|(index, buffer)| {
+                let name = match popup.kind {
+                    PopupKind::Flag => "flag".to_string(),
+                    PopupKind::Upload => match index {
+                        0 => "url",
+                        1 => "type",
+                        _ => "language",
+                    }
+                    .to_string(),
+                    PopupKind::SubmissionForm => form
+                        .get(index)
+                        .map(|f| f.name.clone())
+                        .unwrap_or_else(|| format!("field{index}")),
+                    PopupKind::Config => match index {
+                        0 => "username",
+                        _ => "password",
+                    }
+                    .to_string(),
+                    PopupKind::Download => "dir".to_string(),
+                    PopupKind::Account | PopupKind::Rules => return None,
+                };
+                Some((name, buffer.trim().to_string()))
+            })
+            .filter(|pair| pair.as_ref().is_some_and(|(_, v)| !v.is_empty()))
+            .flatten()
+            .collect()
+    }
+
     /// Confirms the popup: queues the action and closes the popup.
     /// With two fields, non-empty entries are submitted together; a single
     /// non-empty entry (or single-field popup) submits alone. Read-only
@@ -1138,13 +1169,7 @@ impl AppState {
             self.set_status(fmt_key(self.lang.t(Key::StatusAlreadyPwned), &[&popup.vm]));
             return;
         }
-        let values: Vec<(usize, String)> = popup
-            .buffers
-            .iter()
-            .enumerate()
-            .map(|(index, b)| (index, b.trim().to_string()))
-            .filter(|(_, v)| !v.is_empty())
-            .collect();
+        let values = Self::action_values(&popup, &self.data.submission_form);
 
         if popup.kind == PopupKind::Config {
             if values.len() < 2 {
@@ -1218,7 +1243,7 @@ impl AppState {
             }
         }
 
-        let status_key = queued_status_key(popup.kind, values.len());
+        let status_key = queued_status_key(popup.kind);
         self.set_status(fmt_key(self.lang.t(status_key), &[&popup.vm]));
         self.pending_action = Some(TuiAction {
             kind: popup.kind,
@@ -1230,8 +1255,6 @@ impl AppState {
     fn row_count(&self) -> usize {
         match self.tab {
             Tab::Stats => 0,
-            Tab::Writeups => self.visible_writeups().len(),
-            Tab::Pending => self.visible_pending().len(),
             Tab::Machines => self.visible_machines().len(),
             Tab::Releases => self.visible_releases().len(),
             Tab::Submissions => self.visible_submissions().len(),
@@ -1252,11 +1275,6 @@ impl AppState {
     pub fn move_start(&mut self) {
         self.selected = 0;
         self.scroll = 0;
-    }
-
-    #[cfg(test)]
-    pub fn reset_list_position_for_test(&mut self) {
-        self.reset_list_position();
     }
 
     /// Keeps `selected` inside the `[scroll, scroll + visible)` window.
@@ -1294,30 +1312,6 @@ impl AppState {
         self.reset_list_position();
     }
 
-    /// URL of the selected accepted writeup, for opening in a browser.
-    pub fn selected_writeup_url(&self) -> Option<&str> {
-        if self.tab != Tab::Writeups {
-            return None;
-        }
-        self.visible_writeups()
-            .get(self.selected)
-            .map(|w| w.url.as_str())
-    }
-
-    pub fn open_selected_link(&mut self) {
-        if let Some(url) = self.selected_writeup_url() {
-            let opened = std::process::Command::new("xdg-open")
-                .arg(url)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            self.set_status(match opened {
-                Ok(_) => fmt_key(self.lang.t(Key::StatusOpenedBrowser), &[url]),
-                Err(error) => fmt_key(self.lang.t(Key::StatusXdgOpenFailed), &[&error.to_string()]),
-            });
-        }
-    }
-
     /// Manual refresh: only allowed while idle to keep the state machine
     /// sane. The event loop owns the `fetching` label; this only queues the
     /// request — setting the label here too would make the loop's trigger
@@ -1334,59 +1328,60 @@ impl AppState {
     }
 }
 
-/// Builds the result popup for a flag submission. Verdicts are labeled with
-/// the field they were typed into (User flag / Root flag) — the API does not
-/// expose the flag level. A lone accepted flag keeps the celebratory footer.
-pub fn build_flag_report(lang: Lang, vm: &str, results: Vec<(usize, FlagVerdict)>) -> ActionReport {
-    let mut entries = Vec::new();
-    let mut compact = Vec::new();
-    let mut changed = false;
-
-    for (field, verdict) in results {
-        let (label, short) = flag_labels(lang, field);
-        match verdict {
-            FlagVerdict::Correct => {
-                entries.push((
-                    ReportKind::Success,
-                    fmt_key(lang.t(Key::ReportFlagAccepted), &[label]),
-                ));
-                compact.push(format!("{short} ✓"));
-                changed = true;
-            }
-            FlagVerdict::Wrong => {
-                entries.push((
-                    ReportKind::Failure,
-                    fmt_key(lang.t(Key::ReportFlagRejected), &[label]),
-                ));
-                compact.push(format!("{short} ✗"));
-            }
-            FlagVerdict::MachineNotFound => {
-                entries.push((
-                    ReportKind::Failure,
-                    fmt_key(lang.t(Key::ReportMachineNotFound), &[vm]),
-                ));
-                compact.push(lang.t(Key::CompactMachineNotFound).to_string());
-            }
-            FlagVerdict::Unknown(body) => {
-                let body: String = body.chars().take(60).collect();
-                entries.push((
+/// Builds the result popup for a single flag submission. The endpoint takes
+/// one flag and decides whether it was the user or root one.
+pub fn build_flag_report(lang: Lang, vm: &str, verdict: FlagVerdict) -> ActionReport {
+    let (entry, compact, changed) = match verdict {
+        FlagVerdict::Accepted => (
+            (
+                ReportKind::Success,
+                lang.t(Key::ReportFlagAccepted).to_string(),
+            ),
+            "✓".to_string(),
+            true,
+        ),
+        FlagVerdict::Wrong => (
+            (
+                ReportKind::Failure,
+                lang.t(Key::ReportFlagRejected).to_string(),
+            ),
+            "✗".to_string(),
+            false,
+        ),
+        FlagVerdict::AlreadyPwned => (
+            (ReportKind::Info, lang.t(Key::ReportFlagAlready).to_string()),
+            lang.t(Key::ReportFlagAlready).to_string(),
+            false,
+        ),
+        FlagVerdict::MachineNotFound => (
+            (
+                ReportKind::Failure,
+                fmt_key(lang.t(Key::ReportMachineNotFound), &[vm]),
+            ),
+            lang.t(Key::CompactMachineNotFound).to_string(),
+            false,
+        ),
+        FlagVerdict::Unknown(body) => {
+            let body: String = body.chars().take(60).collect();
+            (
+                (
                     ReportKind::Info,
                     fmt_key(lang.t(Key::ReportUnknownResponse), &[&body]),
-                ));
-                compact.push(lang.t(Key::CompactUnknown).to_string());
-            }
+                ),
+                lang.t(Key::CompactUnknown).to_string(),
+                false,
+            )
         }
-    }
+    };
 
-    let status = if entries.len() == 1 && changed {
+    let status = if changed {
         fmt_key(lang.t(Key::ReportYouHacked), &[vm])
     } else {
-        let marker = if changed { "+" } else { "!" };
-        format!("[{marker}] {}", compact.join(" · "))
+        format!("[!] {compact}")
     };
 
     ActionReport {
-        entries,
+        entries: vec![entry],
         title: fmt_key(lang.t(Key::FlagResultsTitle), &[vm]),
         changed,
         status,
@@ -1591,16 +1586,16 @@ fn spawn_action(
             }
         }
         PopupKind::Config => {
-            let value = |field: usize| {
+            let value = |field: &str| {
                 action
                     .values
                     .iter()
-                    .find(|(f, _)| *f == field)
+                    .find(|(f, _)| f == field)
                     .map(|(_, v)| v.clone())
                     .unwrap_or_default()
             };
             started = true;
-            let (username, password) = (value(0), value(1));
+            let (username, password) = (value("username"), value("password"));
             let tx = tx.clone();
             let run_config = host.run_config.clone();
             std::thread::spawn(move || {
@@ -1654,6 +1649,22 @@ fn start_queued_downloads(app: &mut AppState) {
 /// Applies one background operation result to the app state. Called with
 /// `fetching` already cleared; the loop dispatches new work on the next
 /// iteration.
+/// True when the error is an expired/invalid session. The dashboard then
+/// reopens the login popup instead of showing a transient error status.
+fn recover_auth(app: &mut AppState, error: &anyhow::Error) -> bool {
+    let lost = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<crate::modules::HmvError>()
+            .is_some_and(|e| matches!(e, crate::modules::HmvError::AuthFailed))
+    });
+    if lost {
+        let username = app.data.username.clone();
+        app.needs_config = true;
+        app.open_config_popup(ConfigContext::LoginFailed, Some(&username));
+    }
+    lost
+}
+
 fn apply_outcome(app: &mut AppState, outcome: HostOutcome, pending_fetch: &mut bool) {
     match outcome {
         HostOutcome::Fetched(result) => match *result {
@@ -1661,10 +1672,11 @@ fn apply_outcome(app: &mut AppState, outcome: HostOutcome, pending_fetch: &mut b
                 app.set_data(data);
                 app.set_status(app.lang.t(Key::StatusDataRefreshed));
             }
-            Err(error) => app.set_status(fmt_key(
+            Err(error) if !recover_auth(app, &error) => app.set_status(fmt_key(
                 app.lang.t(Key::StatusFetchFailed),
                 &[&format!("{error:#}")],
             )),
+            Err(_) => {}
         },
         HostOutcome::Actioned(Ok(report)) => {
             // Footer shows a 5s summary; the popup persists.
@@ -1672,10 +1684,11 @@ fn apply_outcome(app: &mut AppState, outcome: HostOutcome, pending_fetch: &mut b
             app.pending_refresh_after_close = report.changed;
             app.report = Some(report);
         }
-        HostOutcome::Actioned(Err(error)) => app.set_status(fmt_key(
+        HostOutcome::Actioned(Err(error)) if !recover_auth(app, &error) => app.set_status(fmt_key(
             app.lang.t(Key::StatusActionFailed),
             &[&format!("{error:#}")],
         )),
+        HostOutcome::Actioned(Err(_)) => {}
         HostOutcome::Writeups { vm, result } => match result {
             Ok(entries) => {
                 if entries.is_empty() {
@@ -1688,10 +1701,11 @@ fn apply_outcome(app: &mut AppState, outcome: HostOutcome, pending_fetch: &mut b
                     });
                 }
             }
-            Err(error) => app.set_status(fmt_key(
+            Err(error) if !recover_auth(app, &error) => app.set_status(fmt_key(
                 app.lang.t(Key::StatusFetchFailed),
                 &[&format!("{error:#}")],
             )),
+            Err(_) => {}
         },
         HostOutcome::Configured { username, result } => match result {
             Ok(()) => {
@@ -1714,7 +1728,7 @@ fn apply_outcome(app: &mut AppState, outcome: HostOutcome, pending_fetch: &mut b
             app.view = ViewMode::Normal;
             app.filter.clear();
             app.set_data(TuiData::empty());
-            app.data.stats.username.clear();
+            app.data.username.clear();
             app.open_config_popup(ConfigContext::LoggedOut, None);
             app.set_status(app.lang.t(Key::StatusLoggedOut));
         }
@@ -1726,45 +1740,24 @@ fn apply_outcome(app: &mut AppState, outcome: HostOutcome, pending_fetch: &mut b
         }
         HostOutcome::Submissions { result } => match result {
             Ok((queue, rules, form)) => apply_submissions_outcome(app, queue, rules, form),
-            Err(error) => app.set_status(fmt_key(
+            Err(error) if !recover_auth(app, &error) => app.set_status(fmt_key(
                 app.lang.t(Key::StatusFetchFailed),
                 &[&format!("{error:#}")],
             )),
+            Err(_) => {}
         },
     }
 }
 
 /// Queued-status message for the popup kind that was just confirmed.
-fn queued_status_key(kind: PopupKind, field_count: usize) -> Key {
+fn queued_status_key(kind: PopupKind) -> Key {
     match kind {
-        PopupKind::Flag => {
-            if field_count > 1 {
-                Key::StatusQueuedFlags
-            } else {
-                Key::StatusQueuedFlag
-            }
-        }
+        PopupKind::Flag => Key::StatusQueuedFlag,
         PopupKind::Upload => Key::StatusQueuedWriteup,
         PopupKind::Download => Key::StatusQueuedDownload,
         PopupKind::Config | PopupKind::Account => unreachable!("handled above"),
         PopupKind::SubmissionForm | PopupKind::Rules => unreachable!("handled above"),
     }
-}
-
-/// Field label (long, colon stripped) and compact form (width-12 column).
-fn flag_labels(lang: Lang, field: usize) -> (&'static str, &'static str) {
-    let key = if field == 0 {
-        Key::PopupUserFlag
-    } else {
-        Key::PopupRootFlag
-    };
-    let label = lang.t(key).trim_end_matches(':');
-    let short = if field == 0 {
-        lang.t(Key::CompactUser)
-    } else {
-        lang.t(Key::CompactRoot)
-    };
-    (label, short)
 }
 
 /// Stores a fetched submission queue, its rules and the submit-form fields.
@@ -1902,15 +1895,10 @@ fn handle_popup_form_key(app: &mut AppState, code: KeyCode) {
         KeyCode::Right | KeyCode::Left => {
             // ←/→ on a <select> field cycles its locked value
             // (Easy -> Medium -> Hard); on text fields it moves fields.
-            let select_options: Option<Vec<String>> = app.popup.as_ref().and_then(|popup| {
-                app.data
-                    .submission_form
-                    .get(popup.field)
-                    .and_then(|f| match &f.kind {
-                        FieldKind::Select(options) => Some(options.clone()),
-                        _ => None,
-                    })
-            });
+            let select_options: Option<Vec<String>> = app
+                .popup
+                .as_ref()
+                .and_then(|popup| popup.selects.get(popup.field).cloned().flatten());
             let forward = code == KeyCode::Right;
             if let Some(options) = select_options {
                 if let Some(popup) = app.popup.as_mut() {
@@ -1934,8 +1922,8 @@ fn handle_popup_form_key(app: &mut AppState, code: KeyCode) {
             let is_locked_select = app
                 .popup
                 .as_ref()
-                .and_then(|popup| app.data.submission_form.get(popup.field))
-                .is_some_and(|f| matches!(f.kind, FieldKind::Select(_)));
+                .and_then(|popup| popup.selects.get(popup.field))
+                .is_some_and(|options| options.is_some());
             if !is_locked_select {
                 if let Some(popup) = app.popup.as_mut() {
                     popup.push(c);
@@ -1989,7 +1977,6 @@ fn handle_normal_key(app: &mut AppState, code: KeyCode) {
                 app.set_status(fmt_key(app.lang.t(Key::StatusCancelDownload), &[&job.vm]));
             }
         }
-        KeyCode::Enter => app.open_selected_link(),
         _ => {}
     }
 }
@@ -2001,72 +1988,45 @@ mod tests {
 
     fn sample_data() -> TuiData {
         use crate::modules::releases::Release;
-        use crate::modules::stats::ProfileWriteup;
         TuiData {
-            stats: ProfileStats {
-                username: "demouser".into(),
-                accepted_writeups: vec![
-                    ProfileWriteup {
-                        vm: "Economists".into(),
-                        language: "English".into(),
-                        url: "https://example.com/economists.md".into(),
-                    },
-                    ProfileWriteup {
-                        vm: "Za1".into(),
-                        language: "English".into(),
-                        url: "https://example.com/za1.md".into(),
-                    },
-                    ProfileWriteup {
-                        vm: "Fuxa".into(),
-                        language: String::new(),
-                        url: "https://example.com/fuxa.md".into(),
-                    },
-                ],
-                ..Default::default()
-            },
+            username: "demouser".into(),
             progress: vec![("Total VMs".into(), 166, 371)],
-            pending: vec!["Fuxa".to_string(), "Liar".to_string(), "Rooted".to_string()],
             catalog: vec![
                 Machine {
                     name: "Fuxa".into(),
                     creator: "0xM4r10".into(),
-                    size: "0.5 Gb".into(),
-                    difficulty: "beginner".into(),
-                    os: "linux".into(),
-                    tested: String::new(),
+                    size: "0.5".into(),
+                    difficulty: "Easy".into(),
+                    os: "Linux".into(),
                     status: "PWNED".into(),
                 },
                 Machine {
                     name: "Nebula1".into(),
                     creator: "Sublarge".into(),
-                    size: "1.3 Gb".into(),
-                    difficulty: "advanced".into(),
-                    os: "linux".into(),
-                    tested: String::new(),
+                    size: "1.3".into(),
+                    difficulty: "Hard".into(),
+                    os: "Linux".into(),
                     status: "TO HACK".into(),
                 },
                 Machine {
                     name: "Arcane".into(),
                     creator: "asya2ross".into(),
-                    size: "0.8 Gb".into(),
-                    difficulty: "intermediate".into(),
-                    os: "linux".into(),
-                    tested: String::new(),
-                    status: "DONE".into(),
+                    size: "0.8".into(),
+                    difficulty: "Medium".into(),
+                    os: "Windows".into(),
+                    status: "TO HACK".into(),
                 },
             ],
             releases: vec![
                 Release {
-                    date: "03-Sept".into(),
+                    date: "03-Sept 09:00".into(),
                     name: "Arcane".into(),
-                    os: "linux".into(),
-                    released: true,
+                    level: "Easy".into(),
                 },
                 Release {
-                    date: "09-Sept".into(),
+                    date: "09-Sept 09:00".into(),
                     name: "INVERNADERO_1.0".into(),
-                    os: "linux".into(),
-                    released: false,
+                    level: "Medium".into(),
                 },
             ],
             submissions: vec![],
@@ -2083,7 +2043,7 @@ mod tests {
     fn tab_navigation_resets_selection() {
         let mut state = app();
         state.next_tab();
-        assert_eq!(state.tab, Tab::Writeups);
+        assert_eq!(state.tab, Tab::Machines);
         state.move_down();
         assert_eq!(state.selected, 1);
         state.next_tab();
@@ -2099,17 +2059,16 @@ mod tests {
         let mut state = app();
         state.filter_push('f');
         state.filter_push('u');
-        assert_eq!(state.visible_pending().len(), 1);
-        assert_eq!(state.visible_pending()[0].as_str(), "Fuxa");
+        assert_eq!(state.visible_machines().len(), 1);
+        assert_eq!(state.visible_machines()[0].name, "Fuxa");
         state.clear_filter();
-        assert_eq!(state.visible_pending().len(), 3);
+        assert_eq!(state.visible_machines().len(), 3);
     }
 
     #[test]
     fn selection_clamps_to_visible_rows() {
         let mut state = app();
-        state.next_tab(); // Writeups
-        state.next_tab(); // Pending (3 rows)
+        state.next_tab(); // Machines (3 rows)
         state.set_visible_rows(2);
         state.move_down();
         state.move_down();
@@ -2165,8 +2124,6 @@ mod tests {
     fn machines_tab_filters_and_selects() {
         let mut state = app();
         state.next_tab();
-        state.next_tab();
-        state.next_tab();
         assert_eq!(state.tab, Tab::Machines);
         assert_eq!(state.visible_machines().len(), 3);
 
@@ -2183,8 +2140,6 @@ mod tests {
         let mut state = app();
         // Flags are gated to the Machines tab.
         state.next_tab();
-        state.next_tab();
-        state.next_tab();
         assert_eq!(state.tab, Tab::Machines);
         // Select the TO HACK machine — writable popup.
         state.move_down();
@@ -2194,7 +2149,7 @@ mod tests {
         let popup = state.popup.as_ref().unwrap();
         assert_eq!(popup.kind, PopupKind::Flag);
         assert_eq!(popup.vm, "Nebula1");
-        assert_eq!(popup.buffers.len(), 2, "flag popup has user+root fields");
+        assert_eq!(popup.buffers.len(), 1, "flag popup has one field");
         assert!(popup.notice.is_none(), "TO HACK machines have no notice");
 
         state.popup.as_mut().unwrap().buffers[0].push_str("flag{abc}");
@@ -2202,50 +2157,36 @@ mod tests {
         assert!(state.popup.is_none());
         let action = state.pending_action.take().unwrap();
         assert_eq!(action.vm, "Nebula1");
-        assert_eq!(action.values, vec![(0, "flag{abc}".to_string())]);
+        assert_eq!(
+            action.values,
+            vec![("flag".to_string(), "flag{abc}".to_string())]
+        );
         assert_eq!(action.kind, PopupKind::Flag);
     }
 
     #[test]
     fn flag_popup_reflects_machine_status() {
         let mut state = app();
-        state.next_tab();
-        state.next_tab();
         state.next_tab(); // Machines
 
         // Fuxa (PWNED, row 0): read-only info popup.
         state.open_action_popup(PopupKind::Flag);
-        let popup = state.popup.as_ref().unwrap();
-        assert!(popup.readonly);
-        assert!(popup.notice.is_none());
-        assert!(popup.buffers.is_empty());
-        state.popup = None;
+        assert!(state.popup.as_ref().unwrap().readonly);
 
-        // Nebula1 (TO HACK, row 1): plain writable popup.
+        // Nebula1 (TO HACK, row 1): writable popup with a single field.
+        state.popup = None;
         state.move_down();
         state.open_action_popup(PopupKind::Flag);
         let popup = state.popup.as_ref().unwrap();
         assert!(!popup.readonly);
         assert!(popup.notice.is_none());
-        state.popup = None;
-
-        // Arcane (DONE, row 2): writable popup with the "one remains" notice.
-        state.move_down();
-        state.open_action_popup(PopupKind::Flag);
-        let popup = state.popup.as_ref().unwrap();
-        assert!(!popup.readonly);
-        assert_eq!(
-            popup.notice.as_deref(),
-            Some("One flag already submitted — one remains.")
-        );
+        assert_eq!(popup.buffers.len(), 1);
     }
 
     #[test]
     fn readonly_popup_cannot_submit() {
         let mut state = app();
-        state.next_tab();
-        state.next_tab();
-        state.next_tab(); // Fuxa (PWNED) selected
+        state.next_tab(); // Machines — Fuxa (PWNED) selected
 
         state.open_action_popup(PopupKind::Flag);
         assert!(state.popup.as_ref().unwrap().readonly);
@@ -2267,73 +2208,49 @@ mod tests {
     }
 
     #[test]
-    fn dual_flag_popup_queues_both_values() {
+    fn flag_popup_queues_one_value() {
         let mut state = app();
-        state.next_tab();
-        state.next_tab();
         state.next_tab(); // Machines
         state.move_down(); // Nebula1 (TO HACK)
 
         state.open_action_popup(PopupKind::Flag);
-        // Fill the user flag, then hop to the root field (Tab) and fill it.
         state.popup.as_mut().unwrap().buffers[0].push_str("flag{user}");
+        // A select-free popup keeps Tab cycling the single field.
         handle_key(
             &mut state,
             KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
         );
-        assert_eq!(state.popup.as_ref().unwrap().field, 1);
-        state.popup.as_mut().unwrap().buffers[1].push_str("flag{root}");
+        assert_eq!(state.popup.as_ref().unwrap().field, 0);
         state.confirm_popup();
 
         let action = state.pending_action.take().unwrap();
         assert_eq!(
             action.values,
-            vec![(0, "flag{user}".to_string()), (1, "flag{root}".to_string())]
+            vec![("flag".to_string(), "flag{user}".to_string())]
         );
     }
 
     #[test]
-    fn build_flag_report_labels_original_fields() {
+    fn build_flag_report_labels_verdicts() {
         use crate::modules::flag::FlagVerdict;
 
-        // User accepted, Root rejected.
-        let report = super::build_flag_report(
-            crate::i18n::Lang::En,
-            "Arcane",
-            vec![(0, FlagVerdict::Correct), (1, FlagVerdict::Wrong)],
-        );
+        let report =
+            super::build_flag_report(crate::i18n::Lang::En, "Arcane", FlagVerdict::Accepted);
         assert_eq!(report.title, " Flag results — Arcane ");
         assert_eq!(report.entries[0].0, ReportKind::Success);
-        assert_eq!(report.entries[0].1, "User flag: ✓ ACCEPTED");
-        assert_eq!(report.entries[1].0, ReportKind::Failure);
-        assert_eq!(report.entries[1].1, "Root flag: ✗ REJECTED");
+        assert_eq!(report.entries[0].1, "Flag: ✓ ACCEPTED");
         assert!(report.changed);
-        assert_eq!(report.status, "[+] User ✓ · Root ✗");
-
-        // Root field only (index 1) keeps its Root label — not shifted.
-        let report = super::build_flag_report(
-            crate::i18n::Lang::En,
-            "Arcane",
-            vec![(1, FlagVerdict::Wrong)],
-        );
-        assert_eq!(report.entries[0].1, "Root flag: ✗ REJECTED");
-        assert!(!report.changed);
-
-        // Lone accepted flag keeps the celebratory footer.
-        let report = super::build_flag_report(
-            crate::i18n::Lang::En,
-            "Arcane",
-            vec![(0, FlagVerdict::Correct)],
-        );
         assert_eq!(report.status, "[✓] You hacked Arcane!");
 
-        // All rejected -> no refresh.
-        let report = super::build_flag_report(
-            crate::i18n::Lang::En,
-            "Arcane",
-            vec![(0, FlagVerdict::Wrong), (1, FlagVerdict::Wrong)],
-        );
+        let report = super::build_flag_report(crate::i18n::Lang::En, "Arcane", FlagVerdict::Wrong);
+        assert_eq!(report.entries[0].0, ReportKind::Failure);
+        assert_eq!(report.entries[0].1, "Flag: ✗ WRONG");
         assert!(!report.changed);
+
+        let report =
+            super::build_flag_report(crate::i18n::Lang::En, "Arcane", FlagVerdict::AlreadyPwned);
+        assert_eq!(report.entries[0].0, ReportKind::Info);
+        assert_eq!(report.entries[0].1, "VM already pwned.");
     }
 
     #[test]
@@ -2344,7 +2261,7 @@ mod tests {
         state.report = Some(super::build_flag_report(
             crate::i18n::Lang::En,
             "Arcane",
-            vec![(0, FlagVerdict::Correct)],
+            FlagVerdict::Accepted,
         ));
         state.pending_refresh_after_close = true;
 
@@ -2367,7 +2284,7 @@ mod tests {
         state.report = Some(super::build_flag_report(
             crate::i18n::Lang::En,
             "Arcane",
-            vec![(0, FlagVerdict::Wrong)],
+            FlagVerdict::Wrong,
         ));
         state.pending_refresh_after_close = false;
         state.refresh_requested = false;
@@ -2381,7 +2298,7 @@ mod tests {
     #[test]
     fn releases_tab_lists_and_filters() {
         let mut state = app();
-        for _ in 0..4 {
+        for _ in 0..2 {
             state.next_tab();
         }
         assert_eq!(state.tab, Tab::Releases);
@@ -2393,7 +2310,7 @@ mod tests {
         state.filter_push('v');
         assert_eq!(state.visible_releases().len(), 1);
         assert_eq!(state.visible_releases()[0].name, "INVERNADERO_1.0");
-        assert!(!state.visible_releases()[0].released);
+        assert_eq!(state.visible_releases()[0].level, "Medium");
     }
 
     #[test]
@@ -2418,7 +2335,8 @@ mod tests {
         assert_eq!(state.tab, super::Tab::Stats, "initial tab");
 
         // 'd' is gated to the Machines tab.
-        state.next_tab(); // Writeups
+        state.next_tab(); // Machines
+        state.next_tab(); // Releases
         handle_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty()),
@@ -2426,8 +2344,7 @@ mod tests {
         assert!(state.popup.is_none());
 
         // On Machines it opens with a destination field.
-        state.next_tab(); // Pending
-        state.next_tab(); // Machines
+        state.previous_tab(); // Machines
         assert_eq!(state.tab, super::Tab::Machines, "before d");
         handle_key(
             &mut state,
@@ -2442,7 +2359,10 @@ mod tests {
         state.confirm_popup();
         let action = state.pending_action.take().unwrap();
         assert_eq!(action.kind, PopupKind::Download);
-        assert_eq!(action.values, vec![(0, "/tmp/vm-lab".to_string())]);
+        assert_eq!(
+            action.values,
+            vec![("dir".to_string(), "/tmp/vm-lab".to_string())]
+        );
     }
 
     #[test]
@@ -2472,52 +2392,58 @@ mod tests {
 
     #[test]
     fn action_keys_are_tab_gated() {
-        // 'f' on Pending -> blocked; 'u' on Pending -> allowed.
+        // 'f' and 'u' are both gated to the Machines tab.
         let mut state = app();
-        state.next_tab(); // Writeups
-        state.next_tab(); // Pending
-        state.popup = None;
+        state.next_tab(); // Machines
+        state.next_tab(); // Releases (not a machine tab)
         handle_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::empty()),
         );
         assert!(
             state.popup.is_none(),
-            "flag popup must be blocked on Pending"
+            "flag popup must be blocked off Machines"
         );
         assert!(state.status.is_some());
 
-        handle_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::empty()),
-        );
-        assert!(state.popup.is_some(), "upload popup allowed on Pending");
-        state.popup = None;
-
-        // 'u' on Machines -> blocked; 'f' on Machines -> allowed.
-        state.next_tab(); // Machines
         handle_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::empty()),
         );
         assert!(
             state.popup.is_none(),
-            "upload popup must be blocked on Machines"
+            "upload popup must be blocked off Machines"
         );
-        assert!(state.status.is_some());
+        state.popup = None;
 
+        // On Machines, 'f' opens for a TO HACK machine…
+        state.previous_tab(); // Machines
+        assert_eq!(state.tab, Tab::Machines);
+        state.move_down(); // Nebula1 (TO HACK)
         handle_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::empty()),
         );
         assert!(state.popup.is_some(), "flag popup allowed on Machines");
+        state.popup = None;
+
+        // …and 'u' is refused because a writeup needs a pwned machine.
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::empty()),
+        );
+        assert!(state.popup.is_none(), "upload needs a pwned machine");
+        state.move_up(); // Fuxa (PWNED)
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::empty()),
+        );
+        assert!(state.popup.is_some(), "upload allowed for a pwned machine");
     }
 
     #[test]
     fn popup_rejects_empty_input_and_double_open() {
         let mut state = app();
-        state.next_tab();
-        state.next_tab();
         state.next_tab(); // Machines
         state.open_action_popup(PopupKind::Flag);
         state.confirm_popup(); // empty buffers -> cancelled, no action
@@ -2540,8 +2466,6 @@ mod tests {
         std::fs::write(base.join("file.txt"), "x").unwrap(); // files never complete
 
         let mut state = app();
-        state.next_tab();
-        state.next_tab();
         state.next_tab(); // Machines
         state.open_action_popup(PopupKind::Download);
         state.popup.as_mut().unwrap().buffers[0] = format!("{}/", base.display());
@@ -2585,11 +2509,9 @@ mod tests {
     fn loading_state_shows_placeholder() {
         let state = AppState::loading();
         assert_eq!(state.fetching, Some("Loading data...".to_string()));
-        assert!(state.data.stats.accepted_writeups.is_empty());
-        assert!(state.data.pending.is_empty());
         // Lists stay safe to render with no data.
-        assert!(state.visible_writeups().is_empty());
-        assert!(state.visible_pending().is_empty());
+        assert!(state.visible_machines().is_empty());
+        assert!(state.visible_releases().is_empty());
     }
 
     #[test]
@@ -2599,7 +2521,7 @@ mod tests {
             &mut state,
             crossterm::event::KeyEvent::new(KeyCode::Tab, crossterm::event::KeyModifiers::empty()),
         );
-        assert_eq!(state.tab, Tab::Writeups);
+        assert_eq!(state.tab, Tab::Machines);
 
         super::handle_key(
             &mut state,
@@ -2654,7 +2576,6 @@ mod tests {
         assert_eq!(popup.buffers[0], "demouser");
         assert!(popup.buffers[1].is_empty(), "password never prefilled");
         assert!(popup.notice.is_some());
-        assert!(state.data.stats.accepted_writeups.is_empty());
     }
 
     #[test]
@@ -2676,7 +2597,10 @@ mod tests {
         assert_eq!(action.kind, PopupKind::Config);
         assert_eq!(
             action.values,
-            vec![(0, "someuser".to_string()), (1, "hunter2".to_string())]
+            vec![
+                ("username".to_string(), "someuser".to_string()),
+                ("password".to_string(), "hunter2".to_string()),
+            ]
         );
     }
 
@@ -2694,8 +2618,6 @@ mod tests {
     #[test]
     fn machines_size_sort_cycles() {
         let mut state = app();
-        state.next_tab();
-        state.next_tab();
         state.next_tab(); // Machines
         assert_eq!(state.machine_sort, MachineSort::Default);
         fn names(state: &AppState) -> Vec<&str> {
@@ -2798,32 +2720,8 @@ mod tests {
     }
 
     #[test]
-    fn selected_url_only_on_writeups_tab() {
-        let mut state = app();
-        assert!(state.selected_writeup_url().is_none()); // Stats tab
-        state.next_tab();
-        assert_eq!(state.tab, Tab::Writeups);
-        // Row 0: Economists.
-        assert_eq!(
-            state.selected_writeup_url(),
-            Some("https://example.com/economists.md")
-        );
-        // Filter 'z' narrows to Za1.
-        state.filter_push('z');
-        state.reset_list_position_for_test();
-        assert_eq!(
-            state.selected_writeup_url(),
-            Some("https://example.com/za1.md")
-        );
-        state.next_tab(); // Pending
-        assert!(state.selected_writeup_url().is_none());
-    }
-
-    #[test]
     fn set_data_preserves_selection_by_name() {
         let mut state = app();
-        state.next_tab(); // Writeups
-        state.next_tab(); // Pending
         state.next_tab(); // Machines
 
         // Select Nebula1 (row 1 of the catalog).
@@ -2838,10 +2736,9 @@ mod tests {
         data.catalog.push(Machine {
             name: "Zephyr".into(),
             creator: "someone".into(),
-            size: "1.0 Gb".into(),
-            difficulty: "beginner".into(),
-            os: "windows".into(),
-            tested: String::new(),
+            size: "1.0".into(),
+            difficulty: "Easy".into(),
+            os: "Windows".into(),
             status: "TO HACK".into(),
         });
         state.set_data(data);
@@ -2852,8 +2749,6 @@ mod tests {
     #[test]
     fn set_data_resets_when_selection_missing() {
         let mut state = app();
-        state.next_tab(); // Writeups
-        state.next_tab(); // Pending
         state.next_tab(); // Machines
         state.move_down();
         state.move_down(); // Arcane (row 2)
@@ -2870,8 +2765,6 @@ mod tests {
     #[test]
     fn busy_fetch_gates_network_actions() {
         let mut state = app();
-        state.next_tab(); // Writeups
-        state.next_tab(); // Pending
         state.next_tab(); // Machines
         state.fetching = Some("Refreshing data...".to_string());
         assert!(
@@ -2903,8 +2796,6 @@ mod tests {
     #[test]
     fn hide_pwned_toggles_and_filters() {
         let mut state = app();
-        state.next_tab(); // Writeups
-        state.next_tab(); // Pending
         state.next_tab(); // Machines
 
         // Catalog sample: Fuxa (PWNED), Nebula1 (TO HACK), Arcane (DONE).
@@ -2936,8 +2827,6 @@ mod tests {
         assert_eq!(state.visible_machines().len(), 3);
 
         // Gated to the Machines tab like the other machine actions.
-        state.previous_tab(); // Pending
-        state.previous_tab(); // Writeups
         state.previous_tab(); // Stats
         assert_eq!(state.tab, Tab::Stats);
         state.toggle_hide_pwned();

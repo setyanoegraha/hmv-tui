@@ -3,15 +3,12 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Clear, LineGauge, List, ListItem, ListState, Paragraph, Row, Table, TableState,
-    Tabs,
-};
+use ratatui::widgets::{Block, Borders, Clear, LineGauge, Paragraph, Row, Table, TableState, Tabs};
 use ratatui::Frame;
 
 use super::{
     downloads::Phase, ActionReport, AppState, InputMode, Popup, PopupKind, ReportKind, Tab,
-    ViewMode, WriteupsPopup,
+    TuiData, ViewMode, WriteupsPopup,
 };
 use crate::i18n::{Key, Lang};
 
@@ -24,14 +21,12 @@ const NORD10: Color = Color::Rgb(0x5E, 0x81, 0xAC); // frost (links)
 const NORD11: Color = Color::Rgb(0xBF, 0x61, 0x6A); // aurora red
 const NORD13: Color = Color::Rgb(0xEB, 0xCB, 0x8B); // aurora yellow
 const NORD14: Color = Color::Rgb(0xA3, 0xBE, 0x8C); // aurora green
-const NORD15: Color = Color::Rgb(0xB4, 0x8E, 0xAD); // aurora purple
 
 const ACCENT: Color = NORD8; // titles, active tab, gauges, borders
 const WARN: Color = NORD13; // notices, pending count, non-final states
 const OK: Color = NORD14; // success, PWNED, beginner difficulty
 const BAD: Color = NORD11; // failures, advanced difficulty
 const FROST: Color = NORD7; // was cyan: windows OS, READ format
-const PURPLE: Color = NORD15; // was magenta: WATCH format, UPCOMING
 const BRIGHT: Color = NORD6; // was white: names, primary text
 const LINK: Color = NORD10; // writeup URLs
 const HL_BG: Color = NORD1; // selected-row background
@@ -50,8 +45,6 @@ pub fn draw(frame: &mut Frame, app: &mut AppState) {
 
     match app.tab {
         Tab::Stats => draw_stats(frame, body, app),
-        Tab::Writeups => draw_writeups(frame, body, app),
-        Tab::Pending => draw_pending(frame, body, app),
         Tab::Machines => draw_machines(frame, body, app),
         Tab::Releases => draw_releases(frame, body, app),
         Tab::Submissions => draw_submissions(frame, body, app),
@@ -77,8 +70,10 @@ pub fn draw(frame: &mut Frame, app: &mut AppState) {
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &AppState) {
-    let stats = &app.data.stats;
-    let pending_count = app.data.pending.len();
+    let data = &app.data;
+    let pwned = count_pwned(&data.catalog);
+    let total = data.catalog.len();
+    let (mine, accepted) = count_my_submissions(data);
     let line = Line::from(vec![
         Span::styled(" HackMyVM", Style::new().fg(ACCENT).bold()),
         Span::styled(
@@ -87,36 +82,43 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &AppState) {
         ),
         Span::raw("  ·  "),
         Span::styled(
-            format!("{} ", stats.username),
+            format!("{} ", data.username),
             Style::new().fg(BRIGHT).bold(),
-        ),
-        Span::styled(
-            stats.rank.clone().unwrap_or_default(),
-            Style::new().fg(ACCENT),
-        ),
-        Span::raw("  ·  "),
-        Span::styled(
-            super::fmt_key(app.lang.t(Key::HeaderPoints), &[&stats.points.to_string()]),
-            Style::new().fg(WARN),
         ),
         Span::raw("  ·  "),
         Span::styled(
             super::fmt_key(
-                app.lang.t(Key::HeaderWriteups),
-                &[&stats.accepted_writeups.len().to_string()],
+                app.lang.t(Key::HeaderPwned),
+                &[&pwned.to_string(), &total.to_string()],
+            ),
+            Style::new().fg(if pwned > 0 { OK } else { WARN }),
+        ),
+        Span::raw("  ·  "),
+        Span::styled(
+            super::fmt_key(
+                app.lang.t(Key::HeaderSubmissions),
+                &[&format!("{mine} ({accepted} accepted)")],
             ),
             Style::new().fg(FROST),
         ),
-        Span::raw("  ·  "),
-        Span::styled(
-            super::fmt_key(
-                app.lang.t(Key::HeaderPending),
-                &[&pending_count.to_string()],
-            ),
-            Style::new().fg(if pending_count > 0 { WARN } else { OK }),
-        ),
     ]);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Machines whose both flags are in.
+fn count_pwned(catalog: &[crate::modules::machines::Machine]) -> usize {
+    catalog.iter().filter(|m| m.status == "PWNED").count()
+}
+
+/// (my submissions, my accepted submissions).
+fn count_my_submissions(data: &TuiData) -> (usize, usize) {
+    let mine: Vec<&crate::modules::submissions::QueueEntry> = data
+        .submissions
+        .iter()
+        .filter(|e| e.user.eq_ignore_ascii_case(&data.username))
+        .collect();
+    let accepted = mine.iter().filter(|e| e.status.contains("ACCEPT")).count();
+    (mine.len(), accepted)
 }
 
 fn draw_tabs(frame: &mut Frame, area: Rect, app: &AppState) {
@@ -124,8 +126,6 @@ fn draw_tabs(frame: &mut Frame, area: Rect, app: &AppState) {
         .iter()
         .map(|t| match t {
             Tab::Stats => app.lang.t(Key::TabStats),
-            Tab::Writeups => app.lang.t(Key::TabWriteups),
-            Tab::Pending => app.lang.t(Key::TabPending),
             Tab::Machines => app.lang.t(Key::TabMachines),
             Tab::Releases => app.lang.t(Key::TabReleases),
             Tab::Submissions => app.lang.t(Key::TabSubmissions),
@@ -141,79 +141,32 @@ fn draw_tabs(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 fn draw_stats(frame: &mut Frame, area: Rect, app: &AppState) {
-    let stats = &app.data.stats;
+    let data = &app.data;
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(45), Constraint::Fill(1)]).areas(area);
 
-    let mut lines = vec![
+    let pwned = count_pwned(&data.catalog);
+    let total = data.catalog.len();
+    let (mine, accepted) = count_my_submissions(data);
+    let lines = vec![
         Line::from(Span::styled(
             app.lang.t(Key::StatsIdentity),
             Style::new().fg(ACCENT).bold(),
         )),
+        Line::from(format!("{}{}", app.lang.t(Key::StatsUser), data.username)),
         Line::from(format!(
-            "{}{}",
-            app.lang.t(Key::StatsRank),
-            stats.rank.as_deref().unwrap_or("-")
-        )),
-        Line::from(format!(
-            "{}{}",
-            app.lang.t(Key::StatsTitle),
-            stats.title.as_deref().unwrap_or("-")
+            "{}{} / {}",
+            app.lang.t(Key::StatsMachinesLine),
+            pwned,
+            total
         )),
         Line::from(format!(
-            "{}{}",
-            app.lang.t(Key::StatsCountry),
-            stats.country.as_deref().unwrap_or("-")
-        )),
-        Line::from(format!("{}{}", app.lang.t(Key::StatsLoved), stats.loved)),
-        Line::from(""),
-        Line::from(Span::styled(
-            app.lang.t(Key::StatsAchievements),
-            Style::new().fg(ACCENT).bold(),
-        )),
-        Line::from(format!("{}{}", app.lang.t(Key::StatsPoints), stats.points)),
-        Line::from(format!(
-            "{}{}",
-            app.lang.t(Key::StatsTotalRoots),
-            stats.roots
-        )),
-        Line::from(format!(
-            "{}{}",
-            app.lang.t(Key::StatsTotalUsers),
-            stats.users
-        )),
-        Line::from(format!(
-            "{}{}",
-            app.lang.t(Key::StatsFirstRoots),
-            stats.first_roots
-        )),
-        Line::from(format!(
-            "{}{}",
-            app.lang.t(Key::StatsFirstUsers),
-            stats.first_users
-        )),
-        Line::from(format!(
-            "{}{}",
-            app.lang.t(Key::StatsChallenges),
-            stats.challenges
-        )),
-        Line::from(format!(
-            "{}{}",
-            app.lang.t(Key::StatsWriteups),
-            stats.writeups
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            super::fmt_key(
-                app.lang.t(Key::StatsTrophies),
-                &[&stats.trophies.len().to_string()],
-            ),
-            Style::new().fg(ACCENT).bold(),
+            "{}{} ({} accepted)",
+            app.lang.t(Key::StatsSubmissionsLine),
+            mine,
+            accepted
         )),
     ];
-    for chunk in stats.trophies.chunks(5) {
-        lines.push(Line::from(format!("  {}", chunk.join("  "))));
-    }
 
     frame.render_widget(Paragraph::new(lines), left);
 
@@ -254,97 +207,8 @@ fn draw_stats(frame: &mut Frame, area: Rect, app: &AppState) {
     }
 }
 
-fn draw_writeups(frame: &mut Frame, area: Rect, app: &mut AppState) {
-    let visible = app.visible_writeups();
-    let header = Row::new([
-        app.lang.t(Key::ColVm),
-        app.lang.t(Key::ColLanguage),
-        app.lang.t(Key::ColLink),
-    ])
-    .style(Style::new().fg(ACCENT).bold())
-    .bottom_margin(0);
-
-    let rows: Vec<Row> = visible
-        .iter()
-        .map(|w| {
-            Row::new([
-                w.vm.clone(),
-                if w.language.is_empty() {
-                    "-".to_string()
-                } else {
-                    w.language.clone()
-                },
-                w.url.clone(),
-            ])
-        })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(20),
-            Constraint::Length(12),
-            Constraint::Fill(1),
-        ],
-    )
-    .header(header)
-    .row_highlight_style(Style::new().bg(HL_BG).add_modifier(Modifier::BOLD))
-    .block(filter_block(app));
-
-    let mut state = TableState::default().with_selected(Some(app.selected));
-    frame.render_stateful_widget(table, area, &mut state);
-
-    app.set_visible_rows(visible_rows_in(area.height, visible.len()));
-}
-
-fn draw_pending(frame: &mut Frame, area: Rect, app: &mut AppState) {
-    let visible = app.visible_pending();
-
-    let items: Vec<ListItem> = visible
-        .iter()
-        .map(|vm| {
-            let name = (*vm).clone();
-            ListItem::new(Line::from(vec![
-                Span::styled(" ● ", Style::new().fg(WARN)),
-                Span::styled(name, Style::new().fg(BRIGHT).bold()),
-                Span::styled(app.lang.t(Key::PendingItemSuffix), Style::new().dim()),
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .highlight_style(Style::new().bg(HL_BG).add_modifier(Modifier::BOLD))
-        .block(filter_block(app));
-
-    let mut state = ListState::default().with_selected(Some(app.selected));
-    frame.render_stateful_widget(list, area, &mut state);
-
-    if visible.is_empty() {
-        let empty = Paragraph::new(Span::styled(
-            app.lang.t(Key::PendingEmpty),
-            Style::new().fg(ACCENT),
-        ))
-        .block(filter_block(app));
-        frame.render_widget(empty, area);
-    }
-
-    app.set_visible_rows(visible_rows_in(area.height, visible.len()));
-}
-
 fn filter_block(app: &AppState) -> Block<'_> {
     let count_line = match app.tab {
-        Tab::Writeups => format!(
-            " {} {}/{} ",
-            app.lang.t(Key::TabWriteups),
-            app.visible_writeups().len(),
-            app.data.stats.accepted_writeups.len()
-        ),
-        Tab::Pending => format!(
-            " {} {}/{} ",
-            app.lang.t(Key::TabPending),
-            app.visible_pending().len(),
-            app.data.pending.len()
-        ),
         Tab::Machines => format!(
             " {} {}/{}{}{} ",
             app.lang.t(Key::TabMachines),
@@ -410,7 +274,6 @@ fn draw_machines(frame: &mut Frame, area: Rect, app: &mut AppState) {
         app.lang.t(Key::ColCreator),
         app.lang.t(Key::ColSize),
         app.lang.t(Key::ColOs),
-        app.lang.t(Key::ColCompat),
         app.lang.t(Key::ColStatus),
     ])
     .style(Style::new().fg(ACCENT).bold());
@@ -420,26 +283,20 @@ fn draw_machines(frame: &mut Frame, area: Rect, app: &mut AppState) {
         .map(|m| {
             let diff = m.difficulty.to_uppercase();
             let diff_span = match diff.as_str() {
-                "BEGINNER" => Span::styled(diff, Style::new().fg(OK)),
-                "INTERMEDIATE" => Span::styled(diff, Style::new().fg(WARN)),
-                "ADVANCED" => Span::styled(diff, Style::new().fg(BAD)),
+                "EASY" => Span::styled(diff, Style::new().fg(OK)),
+                "MEDIUM" => Span::styled(diff, Style::new().fg(WARN)),
+                "HARD" => Span::styled(diff, Style::new().fg(BAD)),
                 _ => Span::raw(diff),
             };
-            let os_span = if m.os == "windows" {
+            let os_span = if m.os.eq_ignore_ascii_case("windows") {
                 Span::styled(m.os.clone(), Style::new().fg(FROST))
             } else {
                 Span::styled(m.os.clone(), Style::new().fg(WARN))
             };
-            let compat = if m.tested.is_empty() {
-                app.lang.t(Key::NoCompat).to_string()
+            let status_span = if m.status == "PWNED" {
+                Span::styled(m.status.clone(), Style::new().fg(OK).bold())
             } else {
-                m.tested.clone()
-            };
-            let status = m.status.to_uppercase();
-            let status_span = if status.contains("DONE") || status.contains("PWNED") {
-                Span::styled(status, Style::new().fg(OK).bold())
-            } else {
-                Span::styled(status, Style::new().fg(WARN))
+                Span::styled(m.status.clone(), Style::new().fg(WARN))
             };
             Row::new([
                 Span::styled(m.name.clone(), Style::new().fg(BRIGHT)),
@@ -447,7 +304,6 @@ fn draw_machines(frame: &mut Frame, area: Rect, app: &mut AppState) {
                 Span::raw(m.creator.clone()),
                 Span::raw(m.size.clone()),
                 os_span,
-                Span::styled(compat, Style::new().dim()),
                 status_span,
             ])
         })
@@ -461,7 +317,6 @@ fn draw_machines(frame: &mut Frame, area: Rect, app: &mut AppState) {
             Constraint::Length(13),
             Constraint::Length(9),
             Constraint::Length(9),
-            Constraint::Length(18),
             Constraint::Fill(1),
         ],
     )
@@ -570,8 +425,7 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup, app: &AppState) {
         return;
     }
 
-    let fields = popup.buffers.len();
-    let height = if fields > 1 { 10 } else { 7 };
+    let height = 3 + 3 * popup.buffers.len() as u16;
     let height = if popup.notice.is_some() {
         height + 1
     } else {
@@ -616,10 +470,10 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup, app: &AppState) {
             // Prefer the translated label for known fallback field names;
             // scraped fields keep their site label.
             let label = match fallback_names.get(index).map(String::as_str) {
-                Some("vmname") => lang.t(Key::SubmitName),
+                Some("name") => lang.t(Key::SubmitName),
                 Some("url") => lang.t(Key::SubmitUrl),
-                Some("flaguser") => lang.t(Key::SubmitUserFlag),
-                Some("flagroot") => lang.t(Key::SubmitRootFlag),
+                Some("user_flag") => lang.t(Key::SubmitUserFlag),
+                Some("root_flag") => lang.t(Key::SubmitRootFlag),
                 Some("writeup") => lang.t(Key::SubmitWriteup),
                 Some("tags") => lang.t(Key::SubmitTags),
                 Some("notes") => lang.t(Key::SubmitNotes),
@@ -657,12 +511,16 @@ fn render_text_popup(frame: &mut Frame, box_area: Rect, popup: &Popup, lang: Lan
     let (title, prompts, hint): (String, Vec<&str>, &str) = match popup.kind {
         PopupKind::Flag => (
             super::fmt_key(lang.t(Key::PopupSubmitFlags), &[&popup.vm]),
-            vec![lang.t(Key::PopupUserFlag), lang.t(Key::PopupRootFlag)],
+            vec![lang.t(Key::PopupUserFlag)],
             lang.t(Key::PopupHintFlag),
         ),
         PopupKind::Upload => (
             super::fmt_key(lang.t(Key::PopupSubmitWriteup), &[&popup.vm]),
-            vec![lang.t(Key::PopupWriteupUrl)],
+            vec![
+                lang.t(Key::PopupWriteupUrl),
+                lang.t(Key::UploadType),
+                lang.t(Key::UploadLanguage),
+            ],
             lang.t(Key::PopupHintSend),
         ),
         PopupKind::Download => (
@@ -748,33 +606,24 @@ fn draw_releases(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let visible = app.visible_releases();
     let header = Row::new([
         app.lang.t(Key::ColDate),
-        app.lang.t(Key::ColOs),
+        app.lang.t(Key::ColLevel),
         app.lang.t(Key::ColVm),
-        app.lang.t(Key::ColStatus),
     ])
     .style(Style::new().fg(ACCENT).bold());
 
     let rows: Vec<Row> = visible
         .iter()
         .map(|r| {
-            let os_span = if r.os == "windows" {
-                Span::styled(r.os.clone(), Style::new().fg(FROST))
-            } else {
-                Span::styled(r.os.clone(), Style::new().fg(WARN))
-            };
-            let status_span = if r.released {
-                Span::styled(app.lang.t(Key::ReleaseReleased), Style::new().fg(OK).bold())
-            } else {
-                Span::styled(
-                    app.lang.t(Key::ReleaseUpcoming),
-                    Style::new().fg(PURPLE).bold(),
-                )
+            let level_span = match r.level.to_uppercase().as_str() {
+                "EASY" => Span::styled(r.level.clone(), Style::new().fg(OK)),
+                "MEDIUM" => Span::styled(r.level.clone(), Style::new().fg(WARN)),
+                "HARD" => Span::styled(r.level.clone(), Style::new().fg(BAD)),
+                _ => Span::raw(r.level.clone()),
             };
             Row::new([
                 Span::styled(r.date.clone(), Style::new().dim()),
-                os_span,
+                level_span,
                 Span::styled(r.name.clone(), Style::new().fg(BRIGHT).bold()),
-                status_span,
             ])
         })
         .collect();
@@ -782,9 +631,8 @@ fn draw_releases(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let table = Table::new(
         rows,
         [
-            Constraint::Length(12),
+            Constraint::Length(16),
             Constraint::Length(10),
-            Constraint::Length(24),
             Constraint::Fill(1),
         ],
     )
@@ -802,7 +650,7 @@ fn draw_submissions(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let [mine_area, queue_area] =
         Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
 
-    let username = app.data.stats.username.to_lowercase();
+    let username = app.data.username.to_lowercase();
 
     // Top: this account's submissions (queue filtered by the account name).
     let mine: Vec<&crate::modules::submissions::QueueEntry> = app
@@ -967,21 +815,8 @@ fn draw_writeups_popup(
         .entries
         .iter()
         .map(|w| {
-            let lang_style = if w.language.contains("English") {
-                Style::new().fg(OK)
-            } else {
-                Style::new().fg(WARN)
-            };
-            let format_style = if w.format.contains("Read") {
-                Style::new().fg(FROST)
-            } else {
-                Style::new().fg(PURPLE)
-            };
             Row::new(vec![
-                Span::styled(w.date.clone(), Style::new().dim()),
                 Span::styled(w.author.clone(), Style::new().fg(BRIGHT).bold()),
-                Span::styled(w.language.clone(), lang_style),
-                Span::styled(w.format.to_uppercase(), format_style),
                 Span::styled(w.url.clone(), Style::new().fg(LINK).dim()),
             ])
         })
@@ -993,38 +828,22 @@ fn draw_writeups_popup(
     let box_area = popup_area(area, width, height);
     frame.render_widget(Clear, box_area);
 
-    let header = Row::new([
-        lang.t(Key::ColDate),
-        lang.t(Key::ColAuthor),
-        lang.t(Key::ColLanguage),
-        lang.t(Key::ColFormat),
-        lang.t(Key::ColLink),
-    ])
-    .style(Style::new().fg(ACCENT).bold());
-    let hint =
-        Row::new([" ", " ", " ", " ", lang.t(Key::WriteupsPopupHint)]).style(Style::new().dim());
+    let header = Row::new([lang.t(Key::ColAuthor), lang.t(Key::ColLink)])
+        .style(Style::new().fg(ACCENT).bold());
+    let hint = Row::new([" ", lang.t(Key::WriteupsPopupHint)]).style(Style::new().dim());
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(12),
-            Constraint::Length(16),
-            Constraint::Length(12),
-            Constraint::Length(8),
-            Constraint::Fill(1),
-        ],
-    )
-    .header(header)
-    .footer(hint)
-    .row_highlight_style(Style::new().bg(HL_BG).add_modifier(Modifier::BOLD))
-    .block(
-        Block::bordered()
-            .title(Span::styled(
-                super::fmt_key(lang.t(Key::WriteupsPopupTitle), &[&popup.vm]),
-                Style::new().fg(ACCENT).bold(),
-            ))
-            .border_style(Style::new().fg(ACCENT)),
-    );
+    let table = Table::new(rows, [Constraint::Length(20), Constraint::Fill(1)])
+        .header(header)
+        .footer(hint)
+        .row_highlight_style(Style::new().bg(HL_BG).add_modifier(Modifier::BOLD))
+        .block(
+            Block::bordered()
+                .title(Span::styled(
+                    super::fmt_key(lang.t(Key::WriteupsPopupTitle), &[&popup.vm]),
+                    Style::new().fg(ACCENT).bold(),
+                ))
+                .border_style(Style::new().fg(ACCENT)),
+        );
 
     let mut state = TableState::default().with_selected(Some(popup.selected));
     frame.render_stateful_widget(table, box_area, &mut state);
@@ -1170,26 +989,15 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &AppState) {
             InputMode::Normal => {
                 let list_keys = match app.tab {
                     Tab::Stats => String::new(),
-                    Tab::Writeups => format!(
-                        "{} · {} · {} · ",
-                        app.lang.t(Key::FooterJkMove),
-                        app.lang.t(Key::FooterFilter),
-                        app.lang.t(Key::FooterEnterOpen)
-                    ),
-                    Tab::Pending => format!(
-                        "{} · {} · {} · ",
-                        app.lang.t(Key::FooterJkMove),
-                        app.lang.t(Key::FooterFilter),
-                        app.lang.t(Key::FooterWriteup)
-                    ),
                     Tab::Machines => format!(
-                        "{} · {} · {} · {} · {} · {} · ",
+                        "{} · {} · {} · {} · {} · {} · {} · ",
                         app.lang.t(Key::FooterJkMove),
                         app.lang.t(Key::FooterFilter),
                         app.lang.t(Key::FooterSizeSort),
                         app.lang.t(Key::FooterHidePwned),
                         app.lang.t(Key::FooterFlag),
-                        app.lang.t(Key::FooterDownload)
+                        app.lang.t(Key::FooterDownload),
+                        app.lang.t(Key::FooterWriteup)
                     ),
                     Tab::Releases => format!(
                         "{} · {} · ",
@@ -1287,12 +1095,16 @@ mod tests {
         let out = screen(&mut state);
         assert!(out.contains("HackMyVM"), "header missing: {out}");
         assert!(out.contains("Machines"), "tab labels missing: {out}");
+        assert!(
+            !out.contains("HackMyVM HackMyVM"),
+            "duplicated header title: {out}"
+        );
     }
 
     #[test]
     fn filter_block_shows_the_active_filter() {
         let mut state = app();
-        state.tab = Tab::Writeups;
+        state.tab = Tab::Machines;
         state.input_mode = InputMode::Filter;
         state.filter = "fuxa".into();
         let out = screen(&mut state);
@@ -1311,20 +1123,11 @@ mod tests {
     }
 
     #[test]
-    fn text_popup_renders_both_fields() {
+    fn text_popup_renders_flag_field() {
         let mut state = app();
-        state.popup = Some(Popup {
-            kind: PopupKind::Flag,
-            vm: "Fuxa".into(),
-            buffers: vec![String::new(), String::new()],
-            field: 0,
-            notice: None,
-            readonly: false,
-            completions: Vec::new(),
-        });
+        state.popup = Some(popup(PopupKind::Flag, "Fuxa", vec![String::new()]));
         let out = screen(&mut state);
-        assert!(out.contains("User flag:"), "user field missing: {out}");
-        assert!(out.contains("Root flag:"), "root field missing: {out}");
+        assert!(out.contains("Flag:"), "flag field missing: {out}");
     }
 
     #[test]
@@ -1339,11 +1142,13 @@ mod tests {
     }
 
     fn popup(kind: PopupKind, vm: &str, buffers: Vec<String>) -> Popup {
+        let selects = vec![None; buffers.len()];
         Popup {
             kind,
             vm: vm.into(),
             buffers,
             field: 0,
+            selects,
             notice: None,
             readonly: false,
             completions: Vec::new(),
@@ -1351,54 +1156,32 @@ mod tests {
     }
 
     #[test]
-    fn pending_tab_lists_and_shows_empty_state() {
-        let mut state = app();
-        state.tab = Tab::Pending;
-        state.data.pending = vec!["Fuxa".into()];
-        let out = screen(&mut state);
-        assert!(out.contains("Fuxa"), "pending name missing: {out}");
-        assert!(
-            out.contains("pwned, writeup not submitted"),
-            "pending suffix missing: {out}"
-        );
-
-        state.data.pending.clear();
-        let out = screen(&mut state);
-        assert!(
-            out.contains("Nothing pending"),
-            "empty pending state missing: {out}"
-        );
-    }
-
-    #[test]
-    fn releases_tab_marks_released_and_upcoming() {
+    fn releases_tab_lists_name_level_and_date() {
         let mut state = app();
         state.tab = Tab::Releases;
         state.data.releases = vec![
             Release {
-                date: "03-Sept".into(),
-                name: "Arcane".into(),
-                os: "linux".into(),
-                released: true,
+                date: "05th Nov 09:00".into(),
+                name: "Discuss".into(),
+                level: "Medium".into(),
             },
             Release {
-                date: "09-Sept".into(),
+                date: "09th Nov 09:00".into(),
                 name: "INVERNADERO_1.0".into(),
-                os: "windows".into(),
-                released: false,
+                level: "Medium".into(),
             },
         ];
         let out = screen(&mut state);
-        assert!(out.contains("RELEASED"), "released label missing: {out}");
-        assert!(out.contains("UPCOMING"), "upcoming label missing: {out}");
-        assert!(out.contains("Arcane"), "release row missing: {out}");
+        assert!(out.contains("Discuss"), "release row missing: {out}");
+        assert!(out.contains("05th Nov 09:00"), "date missing: {out}");
+        assert!(out.contains("Medium"), "level missing: {out}");
     }
 
     #[test]
     fn submissions_tab_splits_mine_from_queue() {
         let mut state = app();
         state.tab = Tab::Submissions;
-        state.data.stats.username = "demouser".into();
+        state.data.username = "demouser".into();
         state.data.submissions = vec![
             QueueEntry {
                 user: "demouser".into(),
@@ -1461,10 +1244,7 @@ mod tests {
             vm: "Fuxa".into(),
             selected: 0,
             entries: vec![Writeup {
-                date: "2026-01-01".into(),
                 author: "alice".into(),
-                language: "English".into(),
-                format: "Read".into(),
                 url: "https://example.com/a".into(),
             }],
         });
@@ -1588,12 +1368,11 @@ mod tests {
     }
 
     #[test]
-    fn spanish_writeups_header_is_translated() {
+    fn spanish_machines_header_is_translated() {
         let mut state = AppState::new_with_lang(TuiData::empty(), crate::i18n::Lang::Es);
-        state.tab = Tab::Writeups;
+        state.tab = Tab::Machines;
         let out = screen(&mut state);
-        assert!(out.contains("Idioma"), "Spanish header missing: {out}");
-        assert!(out.contains("Enlace"), "Spanish header missing: {out}");
-        assert!(!out.contains("Language"), "untranslated header: {out}");
+        assert!(out.contains("Máquinas"), "Spanish tab missing: {out}");
+        assert!(!out.contains("Machines"), "untranslated tab: {out}");
     }
 }

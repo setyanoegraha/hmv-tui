@@ -8,23 +8,41 @@
 
 One command, one screen: running `hmv` opens the dashboard. Written in pure **Rust**, shipped as a single static binary with no runtime dependencies.
 
-> **v1.0.0** — HMV-TUI is now dashboard-only. The classic CLI subcommands were removed; everything lives in the dashboard, including account management (first-time setup, switching accounts, logout).
+![HMV-TUI dashboard](docs/screens/stats.png)
+
+> **v1.2.0** — migrated to the new HackMyVM platform: four tabs (Stats, Machines, Releases, Submissions), one-request catalog, single-field flag submission, writeups with type + language. If you are on v1.1.0 or older, rebuild — older builds call retired endpoints and report a misleading "Login failed".
 
 ---
 
 ## Features
 
-* **One command** — `hmv` opens the dashboard: your stats, accepted writeups, pending writeups, the full machine catalog and downloads in one screen.
+* **One command** — `hmv` opens the dashboard: machine catalog, progress gauges, submission queue and downloads in one screen.
 * **In-app account management** — first-run setup, account switching and logout via the account popup (`a`); credentials are validated with a real login before anything is stored.
 * **Secure Auth** — the password lives in your OS vault (Secret Service on Linux, Credential Manager on Windows, Keychain on macOS) via `keyring`. Only the username and the last download folder touch `~/.hmv/config.json`.
-* **Machine catalog** — 370+ machines with color-coded difficulty, instant `/` filtering (name, difficulty, creator, status), size sorting (`s`: smallest ↔ largest) and a PWNED-hide toggle (`h`).
-* **OS & hypervisor columns** — each machine shows its OS (linux/windows) and the hypervisors it was tested on (VirtualBox / VMware) scraped straight from the catalog.
+* **Machine catalog** — 379 machines in one request with color-coded difficulty (Easy/Medium/Hard), instant `/` filtering (name, difficulty, creator, status), size sorting (`s`: smallest ↔ largest) and a PWNED-hide toggle (`h`).
+* **OS column** — each machine shows its OS (Linux / Windows) straight from the catalog.
 * **High-speed downloader** — VMs stream directly from MEGA, up to **2 in parallel** (extras queue), decrypted on the fly (AES-128-CTR) and **integrity-verified with the MEGA per-chunk MAC** before leaving the `.part` staging file.
-* **Flag submission** — dual user/root popup (`f`), both fields sent in parallel; status-aware (PWNED machines get a read-only box, DONE machines a "one remains" notice).
-* **Writeups** — read community writeups (`w`) and submit your own (`u`) once both flags are in.
-* **Submissions** — dedicated tab for your own VM creations: submit a VM (`v`) with a dynamically scraped form (name, download URL, user/root flags, tags, level picker, notes), watch the submission queue, and read the submission rules (`i`).
-* **Release schedule** — upcoming HackMyVM machines with RELEASED / UPCOMING status.
+* **Flag submission** — single-field popup (`f`) whose reply the server classifies as user or root; PWNED machines get a read-only box instead.
+* **Writeups** — read community writeups (`w`) and submit your own (`u`, type + language + URL) once the machine is pwned.
+* **Submissions** — dedicated tab for your own VM creations: submit a VM (`v`) with a dynamically scraped form (name, download URL, user/root flags, tags, level picker, notes, writeup), watch the submission queue, and read the submission guidelines (`i`).
+* **Release schedule** — upcoming HackMyVM machines with their level and date.
 * **Bilingual UI** — switch the whole dashboard between English and Spanish with a single key (`l`); the choice persists across sessions.
+
+---
+
+## Screenshots
+
+<div align="center">
+
+| Stats | Machines |
+| :---: | :---: |
+| <img src="docs/screens/stats.png" width="440" alt="Stats tab: identity block and progress gauges"> | <img src="docs/screens/machines.png" width="440" alt="Machine catalog with difficulty, creator, size, OS and PWNED status"> |
+| **Community writeups** | **Writeup submission** |
+| <img src="docs/screens/writeups.png" width="440" alt="Community writeups popup listing authors and links for Echo"> | <img src="docs/screens/upload.png" width="440" alt="Writeup submission popup with URL, type and language"> |
+| **Submissions** | **Releases** |
+| <img src="docs/screens/submissions.png" width="440" alt="Submission queue split into mine and global"> | <img src="docs/screens/releases.png" width="440" alt="Upcoming releases with level and date"> |
+
+</div>
 
 ---
 
@@ -44,13 +62,13 @@ Grab the archive for your platform from the [Releases](https://github.com/setyan
 
 | Platform | Archive |
 | :--- | :--- |
-| Linux x86_64 | `hmv-v1.0.1-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS Apple Silicon | `hmv-v1.0.1-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `hmv-v1.0.1-x86_64-apple-darwin.tar.gz` |
-| Windows x86_64 | `hmv-v1.0.1-x86_64-pc-windows-msvc.zip` |
+| Linux x86_64 | `hmv-v1.2.0-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS Apple Silicon | `hmv-v1.2.0-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `hmv-v1.2.0-x86_64-apple-darwin.tar.gz` |
+| Windows x86_64 | `hmv-v1.2.0-x86_64-pc-windows-msvc.zip` |
 
 ```bash
-tar xzf hmv-v1.0.1-x86_64-unknown-linux-gnu.tar.gz
+tar xzf hmv-v1.2.0-x86_64-unknown-linux-gnu.tar.gz
 install -m 755 hmv ~/.local/bin/hmv
 ```
 
@@ -94,7 +112,7 @@ On the very first run (or when the stored password no longer works) the dashboar
 Credentials are validated with a real login **before** anything is saved. If the login fails, the popup reopens with your username kept; `Esc` quits the app.
 
 ---
-Six keyboard-driven tabs — `Stats`, `Writeups`, `Pending`, `Machines`, `Releases` and `Submissions`:
+Four keyboard-driven tabs — `Stats`, `Machines`, `Releases` and `Submissions`:
 
 | Keys | Action |
 | :--- | :--- |
@@ -107,13 +125,12 @@ Six keyboard-driven tabs — `Stats`, `Writeups`, `Pending`, `Machines`, `Releas
 | `h` | **Machines only** — toggle hiding fully-PWNED machines (press again to show them). |
 | `l` | **Switch UI language** — English ↔ Spanish, everywhere, persisted across sessions. |
 | `d` | **Machines only** — download popup: pick the destination folder (remembered across sessions, zsh-style `Tab` path completion included), MEGA link resolved automatically, streaming download with live progress in the Downloads overlay. MAC-verified before the file lands. |
-| `w` | **Machines & Pending** — community writeups popup for the selected machine: `j`/`k` to select, `Enter` opens the link in your browser, `Esc` closes. |
-| `u` | **Pending only** — submit a writeup URL for the pwned machine (result popup as well). |
+| `w` | **Machines only** — community writeups popup for the selected machine: `j`/`k` to select, `Enter` opens the link in your browser, `Esc` closes. |
 | `o` | Toggle the **Downloads** overlay (live gauges, speed, final paths). Closing it never stops running downloads. |
 | `c` | **In the Downloads overlay** — cancel the most recent active download (the staged `.part` file is cleaned). |
-| `u` | **Pending only** — submit a writeup URL for the pwned machine (result popup as well). |
-| `v` | **Submissions only** — submit-your-VM popup: VM name, download URL, user/root flags, tags, level (`←`/`→` cycles Easy → Medium → Hard), notes (optional). All required fields must be filled before sending. |
-| `i` | **Submissions only** — read the submission rules in a wide popup. |
+| `u` | **Machines only** — submit a writeup for a pwned machine: URL, type (Text/Video) and language, `←`/`→` cycles the selects (result popup as well). |
+| `v` | **Submissions only** — submit-your-VM popup: VM name, download URL, user/root flags, tags, level (`←`/`→` cycles Easy → Medium → Hard), notes and writeup (both optional). The server validates the payload and its verdict is shown in the result popup. |
+| `i` | **Submissions only** — read the submission guidelines in a wide popup. |
 | `q` / `Esc` / `Ctrl-C` | Quit (with active downloads, the first `q` lists them — press `q` again to abort). |
 
 ### Account Management
@@ -124,7 +141,7 @@ Press `a` anywhere in the dashboard:
 - **`l` — logout**: removes the password from the system vault and the username from `~/.hmv/config.json` (your download-folder preference is kept), clears the dashboard and shows the login popup. Sign in with another account, or `Esc` to quit.
 - Running downloads are never affected — they use public MEGA links, not your session.
 
-Actions submitted from the TUI show their verdicts in a result popup that stays until dismissed (`User flag: ✓ ACCEPTED`, `Root flag: ✗ REJECTED`, ...) and trigger an automatic data refresh on close when your progress changed.
+Actions submitted from the TUI show their verdicts in a result popup that stays until dismissed (`Flag: ✓ ACCEPTED`, `Flag: ✗ WRONG`, ...) and trigger an automatic data refresh on close when your progress changed. A submitted flag is one field: the server decides whether it was the user or the root flag.
 
 Downloads run in the background (max 2 in parallel, extra ones queue): the Downloads overlay shows live gauges, speed and the final path; downloads keep running when the overlay is closed; quitting while a download is active asks for a second `q`.
 
