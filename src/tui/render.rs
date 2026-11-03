@@ -67,13 +67,25 @@ pub fn draw(frame: &mut Frame, app: &mut AppState) {
         let lang = app.lang;
         draw_writeups_popup(frame, frame.area(), &popup, &lang);
     }
+    if app.quit_confirm {
+        draw_quit_confirm(frame, frame.area(), app);
+    }
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &AppState) {
     let data = &app.data;
     let pwned = count_pwned(&data.catalog);
     let total = data.catalog.len();
-    let (mine, accepted) = count_my_submissions(data);
+    let (mine, _accepted) = count_my_submissions(data);
+    let published = count_published(&data.catalog, &data.username);
+    let submissions = if mine == 0 {
+        super::fmt_key(app.lang.t(Key::HeaderPublished), &[&published.to_string()])
+    } else {
+        super::fmt_key(
+            app.lang.t(Key::HeaderSubmissionsPublished),
+            &[&mine.to_string(), &published.to_string()],
+        )
+    };
     let line = Line::from(vec![
         Span::styled(" HackMyVM", Style::new().fg(ACCENT).bold()),
         Span::styled(
@@ -94,13 +106,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &AppState) {
             Style::new().fg(if pwned > 0 { OK } else { WARN }),
         ),
         Span::raw("  ·  "),
-        Span::styled(
-            super::fmt_key(
-                app.lang.t(Key::HeaderSubmissions),
-                &[&format!("{mine} ({accepted} accepted)")],
-            ),
-            Style::new().fg(FROST),
-        ),
+        Span::styled(submissions, Style::new().fg(FROST)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -108,6 +114,14 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &AppState) {
 /// Machines whose both flags are in.
 fn count_pwned(catalog: &[crate::modules::machines::Machine]) -> usize {
     catalog.iter().filter(|m| m.status == "PWNED").count()
+}
+
+/// Machines released under the logged-in account's creator name.
+fn count_published(catalog: &[crate::modules::machines::Machine], username: &str) -> usize {
+    catalog
+        .iter()
+        .filter(|m| m.creator.eq_ignore_ascii_case(username))
+        .count()
 }
 
 /// (my submissions, my accepted submissions).
@@ -148,6 +162,7 @@ fn draw_stats(frame: &mut Frame, area: Rect, app: &AppState) {
     let pwned = count_pwned(&data.catalog);
     let total = data.catalog.len();
     let (mine, accepted) = count_my_submissions(data);
+    let published = count_published(&data.catalog, &data.username);
     let lines = vec![
         Line::from(Span::styled(
             app.lang.t(Key::StatsIdentity),
@@ -160,11 +175,14 @@ fn draw_stats(frame: &mut Frame, area: Rect, app: &AppState) {
             pwned,
             total
         )),
-        Line::from(format!(
-            "{}{} ({} accepted)",
+        Line::from(super::fmt_key(
             app.lang.t(Key::StatsSubmissionsLine),
-            mine,
-            accepted
+            &[&mine.to_string(), &accepted.to_string()],
+        )),
+        Line::from(format!(
+            "{}{}",
+            app.lang.t(Key::StatsPublishedLine),
+            published
         )),
     ];
 
@@ -766,6 +784,52 @@ fn draw_submissions(frame: &mut Frame, area: Rect, app: &mut AppState) {
     app.set_visible_rows(visible_rows_in(mine_area.height, mine.len()));
 }
 
+/// Modal asking to confirm quitting while downloads still run.
+fn draw_quit_confirm(frame: &mut Frame, area: Rect, app: &AppState) {
+    let rows = app.active_download_rows();
+    // warning + blank + one line per download + blank + hint = rows + 4, plus
+    // the two border rows.
+    let height = (rows.len() as u16 + 6).clamp(7, 18);
+    let width = 72.min(area.width);
+    let box_area = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, box_area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            super::fmt_key(
+                app.lang.t(Key::QuitConfirmWarning),
+                &[&rows.len().to_string()],
+            ),
+            Style::new().fg(WARN).bold(),
+        )),
+        Line::from(""),
+    ];
+    for row in &rows {
+        lines.push(Line::from(Span::styled(
+            row.clone(),
+            Style::new().fg(BRIGHT),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        app.lang.t(Key::QuitConfirmHint),
+        Style::new().dim(),
+    )));
+
+    let block = Block::bordered()
+        .title(Span::styled(
+            app.lang.t(Key::QuitConfirmTitle),
+            Style::new().fg(BAD).bold(),
+        ))
+        .border_style(Style::new().fg(BAD));
+    frame.render_widget(Paragraph::new(lines).block(block), box_area);
+}
+
 fn draw_report(frame: &mut Frame, area: Rect, report: &ActionReport, lang: &crate::i18n::Lang) {
     // One blank + (entry + blank) per row + hint = 2n + 2 inner lines.
     let height = (report.entries.len() as u16 * 2 + 4).clamp(6, 14);
@@ -1364,6 +1428,78 @@ mod tests {
         assert!(
             out.contains("One flag already submitted"),
             "notice banner missing: {out}"
+        );
+    }
+
+    #[test]
+    fn quit_confirm_lists_active_downloads() {
+        let mut state = app();
+        state.download_jobs = vec![std::sync::Arc::new(crate::tui::downloads::DownloadJob {
+            vm: "Xslib".into(),
+            state: std::sync::Arc::new(std::sync::Mutex::new({
+                // Private progress fields, so build from Default and set the
+                // public ones the renderer reads.
+                let mut dl = crate::tui::downloads::DownloadState::default();
+                dl.phase = crate::tui::downloads::Phase::Downloading;
+                dl.downloaded = 50;
+                dl.total = 100;
+                dl
+            })),
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })];
+        state.quit_confirm = true;
+        let out = screen(&mut state);
+        assert!(out.contains("still running"), "warning missing: {out}");
+        assert!(out.contains("Xslib 50%"), "row missing: {out}");
+        assert!(
+            out.contains(Lang::En.t(Key::QuitConfirmHint)),
+            "hint clipped by the box height: {out}"
+        );
+    }
+
+    #[test]
+    fn stats_submissions_line_is_translated() {
+        let mut state = app();
+        state.lang = Lang::Es;
+        state.data.username = "demouser".into();
+        state.data.submissions = vec![crate::modules::submissions::QueueEntry {
+            user: "demouser".into(),
+            name: "Mine".into(),
+            date: "01-Oct".into(),
+            status: "ACCEPTED".into(),
+            level: "Easy".into(),
+        }];
+        let out = screen(&mut state);
+        assert!(out.contains("(1 aceptados)"), "untranslated: {out}");
+        assert!(!out.contains("accepted"), "English leaked: {out}");
+    }
+
+    #[test]
+    fn header_counts_published_machines() {
+        let mut state = app();
+        state.data.username = "demouser".into();
+        state.data.catalog = vec![crate::modules::machines::Machine {
+            name: "Grenade".into(),
+            creator: "demouser".into(),
+            size: "1.0".into(),
+            difficulty: "Easy".into(),
+            os: "Linux".into(),
+            status: "PWNED".into(),
+        }];
+        let out = screen(&mut state);
+        assert!(out.contains("1 published"), "empty queue: {out}");
+
+        state.data.submissions = vec![crate::modules::submissions::QueueEntry {
+            user: "demouser".into(),
+            name: "Mine".into(),
+            date: "01-Oct".into(),
+            status: "PENDING".into(),
+            level: "Easy".into(),
+        }];
+        let out = screen(&mut state);
+        assert!(
+            out.contains("1 submissions · 1 published"),
+            "combined counter: {out}"
         );
     }
 

@@ -106,7 +106,12 @@ pub enum Key {
     UploadLanguage,
     ReportFlagAlready,
     HeaderPwned,
-    HeaderSubmissions,
+    HeaderPublished,
+    HeaderSubmissionsPublished,
+    StatsPublishedLine,
+    QuitConfirmTitle,
+    QuitConfirmWarning,
+    QuitConfirmHint,
     StatsUser,
     StatsMachinesLine,
     StatsSubmissionsLine,
@@ -231,9 +236,7 @@ pub enum Key {
     ReportWriteupAccepted,
     ReportWriteupRepeated,
     ReportWriteupRejected,
-
     // Quit warning
-    QuitWarnDownloads,
     // Header counters & tab bodies
 }
 
@@ -295,10 +298,15 @@ fn en(key: Key) -> &'static str {
         UploadLanguage => "Language:",
         ReportFlagAlready => "VM already pwned.",
         HeaderPwned => "{} / {} pwned",
-        HeaderSubmissions => "{} submissions",
+        HeaderPublished => "{} published",
+        HeaderSubmissionsPublished => "{} submissions · {} published",
+        StatsPublishedLine => "  Published   : ",
+        QuitConfirmTitle => " Exit HMV-TUI ",
+        QuitConfirmWarning => "{} download(s) still running — leaving cancels them:",
+        QuitConfirmHint => "Enter cancel downloads & quit · Esc stay",
         StatsUser => "  User        : ",
         StatsMachinesLine => "  Machines    : ",
-        StatsSubmissionsLine => "  Submissions : ",
+        StatsSubmissionsLine => "  Submissions : {} ({} accepted)",
         StatusNotPwnedYet => "Submit a writeup only after pawning the machine.",
         StatusUploadOnlyMachines => "Writeup upload is only available on the Machines tab.",
         StatusWriteupsMachines => "Community writeups are only available on the Machines tab.",
@@ -365,7 +373,7 @@ fn en(key: Key) -> &'static str {
         DownloadsEmpty => "No downloads yet — press d on a machine.",
         DownloadsResolving => "… {}  resolving MEGA link…",
         DownloadsHint => {
-            "o close (downloads keep running) · c cancel latest · q quit warns while active"
+            "o close (downloads keep running) · c cancel latest · q quit asks to confirm"
         }
 
         // Statuses — generic
@@ -416,7 +424,6 @@ fn en(key: Key) -> &'static str {
         ReportWriteupRejected => "Writeup: ✗ REJECTED — flags missing?",
 
         // Quit warning
-        QuitWarnDownloads => "{} download(s) active — press q again to abort: {}",
         FetchingLoading => "Loading data...",
         FetchingRefreshing => "Refreshing data...",
         FetchingLogout => "Logging out...",
@@ -452,10 +459,15 @@ fn es(key: Key) -> &'static str {
         UploadLanguage => "Idioma:",
         ReportFlagAlready => "VM ya pwned.",
         HeaderPwned => "{} / {} pwned",
-        HeaderSubmissions => "{} envíos",
+        HeaderPublished => "{} publicadas",
+        HeaderSubmissionsPublished => "{} envíos · {} publicadas",
+        StatsPublishedLine => "  Publicadas : ",
+        QuitConfirmTitle => " Salir de HMV-TUI ",
+        QuitConfirmWarning => "{} descarga(s) en curso — salir las cancelará:",
+        QuitConfirmHint => "Enter cancelar descargas y salir · Esc quedarse",
         StatsUser => "  Usuario     : ",
         StatsMachinesLine => "  Máquinas    : ",
-        StatsSubmissionsLine => "  Envíos      : ",
+        StatsSubmissionsLine => "  Envíos      : {} ({} aceptados)",
         StatusNotPwnedYet => "Envía un writeup solo tras pwning la máquina.",
         StatusUploadOnlyMachines => {
             "La subida de writeups solo está disponible en la pestaña Máquinas."
@@ -555,7 +567,7 @@ fn es(key: Key) -> &'static str {
         DownloadsEmpty => "Aún no hay descargas — pulsa d en una máquina.",
         DownloadsResolving => "… {}  resolviendo enlace de MEGA…",
         DownloadsHint => {
-            "o cerrar (las descargas siguen) · c cancelar la última · q avisa mientras haya activas"
+            "o cerrar (las descargas siguen) · c cancelar la última · q pide confirmación"
         }
 
         // Statuses — generic
@@ -604,7 +616,6 @@ fn es(key: Key) -> &'static str {
         ReportUnknownResponse => "Respuesta desconocida: {}",
         ReportYouHacked => "[✓] ¡Has hackeado {}!",
         ReportWriteupAccepted => "Writeup: ✓ ACEPTADO — {}",
-        QuitWarnDownloads => "{} descarga(s) activa(s) — pulsa q otra vez para abortar: {}",
         FetchingLoading => "Cargando datos...",
         FetchingRefreshing => "Actualizando datos...",
         FetchingLogout => "Cerrando sesión...",
