@@ -131,7 +131,7 @@ Four keyboard-driven tabs — `Stats`, `Machines`, `Releases` and `Submissions`:
 | `u` | **Machines only** — submit a writeup for a pwned machine: URL, type (Text/Video) and language, `←`/`→` cycles the selects (result popup as well). |
 | `v` | **Submissions only** — submit-your-VM popup: VM name, download URL, user/root flags, tags, level (`←`/`→` cycles Easy → Medium → Hard), notes and writeup (both optional). The server validates the payload and its verdict is shown in the result popup. |
 | `i` | **Submissions only** — read the submission guidelines in a wide popup. |
-| `q` / `Esc` / `Ctrl-C` | Quit (with active downloads, the first `q` lists them — press `q` again to abort). |
+| `q` / `Esc` / `Ctrl-C` | Quit — with active downloads, a confirmation popup lists them: `Enter` cancels the downloads and quits, `Esc` stays. |
 
 ### Account Management
 
@@ -143,7 +143,7 @@ Press `a` anywhere in the dashboard:
 
 Actions submitted from the TUI show their verdicts in a result popup that stays until dismissed (`Flag: ✓ ACCEPTED`, `Flag: ✗ WRONG`, ...) and trigger an automatic data refresh on close when your progress changed. A submitted flag is one field: the server decides whether it was the user or the root flag.
 
-Downloads run in the background (max 2 in parallel, extra ones queue): the Downloads overlay shows live gauges, speed and the final path; downloads keep running when the overlay is closed; quitting while a download is active asks for a second `q`.
+Downloads run in the background (max 2 in parallel, extra ones queue): the Downloads overlay shows live gauges, speed and the final path; downloads keep running when the overlay is closed; quitting while a download is active opens a confirmation popup listing them (`Enter` cancels and quits, `Esc` stays).
 
 ### Where Your Data Lives
 

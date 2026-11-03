@@ -412,8 +412,8 @@ pub struct AppState {
     pub pending_logout: bool,
     /// Background download jobs (newest last). Shared with the renderer.
     pub download_jobs: Vec<std::sync::Arc<downloads::DownloadJob>>,
-    /// First `q` with active downloads only sets this; second quits.
-    pub quit_warned: bool,
+    /// A quit was requested while downloads run; the modal asks to confirm.
+    pub quit_confirm: bool,
     /// UI language (EN/ES), switched with `l`, persisted in the config.
     pub lang: Lang,
     pub filter: String,
@@ -482,7 +482,7 @@ impl AppState {
             needs_config: false,
             pending_logout: false,
             download_jobs: Vec::new(),
-            quit_warned: false,
+            quit_confirm: false,
             lang,
             filter: String::new(),
             hide_pwned: false,
@@ -564,33 +564,31 @@ impl AppState {
             .unwrap_or(self.download_jobs.len().saturating_sub(1))
     }
 
-    /// First `q` with active downloads warns instead of quitting.
+    /// Quitting with downloads in flight asks first: leaving cancels them.
     pub fn request_quit(&mut self) {
-        let active = self.active_downloads();
-        if active > 0 && !self.quit_warned {
-            self.quit_warned = true;
-            let jobs: Vec<String> = self
-                .download_jobs
-                .iter()
-                .filter(|job| job.is_active())
-                .map(|job| {
-                    let state = job.state.lock().unwrap();
-                    let pct = state
-                        .downloaded
-                        .checked_mul(100)
-                        .and_then(|pct| pct.checked_div(state.total))
-                        .map(|pct| format!(" {pct}%"))
-                        .unwrap_or_default();
-                    format!("↓ {}{pct}", job.vm)
-                })
-                .collect();
-            self.set_status(fmt_key(
-                self.lang.t(Key::QuitWarnDownloads),
-                &[&active.to_string(), &jobs.join(" · ")],
-            ));
+        if self.active_downloads() > 0 {
+            self.quit_confirm = true;
             return;
         }
         self.quit = true;
+    }
+
+    /// One row per active download, e.g. "↓ Xslib 42%".
+    pub fn active_download_rows(&self) -> Vec<String> {
+        self.download_jobs
+            .iter()
+            .filter(|job| job.is_active())
+            .map(|job| {
+                let state = job.state.lock().unwrap();
+                let pct = state
+                    .downloaded
+                    .checked_mul(100)
+                    .and_then(|pct| pct.checked_div(state.total))
+                    .map(|pct| format!(" {pct}%"))
+                    .unwrap_or_default();
+                format!("↓ {}{pct}", job.vm)
+            })
+            .collect()
     }
 
     /// Shows a status message in the footer, auto-expiring after 5 seconds.
@@ -1784,6 +1782,15 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
         app.request_quit();
         return;
     }
+    // The quit confirmation owns every key until answered.
+    if app.quit_confirm {
+        match key.code {
+            KeyCode::Enter => app.quit = true,
+            KeyCode::Esc | KeyCode::Char('q') => app.quit_confirm = false,
+            _ => {}
+        }
+        return;
+    }
     if handle_popup_key(app, key) {
         return;
     }
@@ -2366,7 +2373,7 @@ mod tests {
     }
 
     #[test]
-    fn quit_warns_once_while_downloads_are_active() {
+    fn quit_confirms_while_downloads_are_active() {
         let mut state = app();
         state.download_jobs = vec![std::sync::Arc::new(crate::tui::downloads::DownloadJob {
             vm: "Xslib".into(),
@@ -2376,18 +2383,33 @@ mod tests {
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })];
 
-        // First q warns instead of quitting.
         state.request_quit();
-        assert!(!state.quit);
-        assert!(state
-            .status
-            .as_deref()
-            .unwrap()
-            .contains("q again to abort"));
+        assert!(state.quit_confirm, "confirmation must open");
+        assert!(!state.quit, "must not quit on the first key");
 
-        // Second q quits (abort handled by the event loop).
+        // Esc cancels the confirmation only.
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+        );
+        assert!(!state.quit_confirm);
+        assert!(!state.quit);
+
+        // Enter quits; the event loop cancels the job and cleans the .part.
         state.request_quit();
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
         assert!(state.quit);
+    }
+
+    #[test]
+    fn quit_without_downloads_exits_immediately() {
+        let mut idle = app();
+        idle.request_quit();
+        assert!(idle.quit);
+        assert!(!idle.quit_confirm);
     }
 
     #[test]

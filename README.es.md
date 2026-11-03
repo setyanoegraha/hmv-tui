@@ -133,7 +133,7 @@ Cuatro pestañas manejadas por teclado — `Stats`, `Machines`, `Releases` y `Su
 | `o` | Alternar el overlay de **Descargas** (medidores en vivo, velocidad, rutas finales). Cerrarlo nunca detiene las descargas en curso. |
 | `c` | **En el overlay de Descargas** — cancelar la descarga activa más reciente (el `.part` temporal se limpia). |
 | `r` | Volver a obtener todos los datos |
-| `q` / `Esc` / `Ctrl-C` | Salir (con descargas activas, el primer `q` las lista — pulsa `q` otra vez para abortar). |
+| `q` / `Esc` / `Ctrl-C` | Salir — con descargas activas, un popup de confirmación las lista: `Enter` cancela las descargas y sale, `Esc` se queda. |
 
 ### Gestión de la cuenta
 
@@ -145,7 +145,7 @@ Pulsa `a` en cualquier parte del dashboard:
 
 Las acciones enviadas desde la TUI muestran su veredicto en un popup de resultado que persiste hasta cerrarse (`Flag: ✓ ACEPTADA`, `Flag: ✗ INCORRECTA`, ...) y disparan una actualización automática de datos al cerrarse si tu progreso cambió. La flag enviada es un solo campo: el servidor decide si era la user o la root.
 
-Las descargas corren en segundo plano (máx. 2 en paralelo, las demás en cola): el overlay de Descargas muestra medidores en vivo, velocidad y la ruta final; las descargas siguen aunque cierres el overlay; si sales con descargas activas, pide un segundo `q`.
+Las descargas corren en segundo plano (máx. 2 en paralelo, las demás en cola): el overlay de Descargas muestra medidores en vivo, velocidad y la ruta final; las descargas siguen aunque cierres el overlay; si sales con descargas activas, se abre un popup de confirmación con la lista (`Enter` cancela y sale, `Esc` se queda).
 
 ### Dónde viven tus datos
 
