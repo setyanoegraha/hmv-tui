@@ -31,8 +31,10 @@ pub struct DownloadState {
     pub downloaded: u64,
     pub total: u64,
     pub speed_bps: u64,
+    pub file_name: Option<String>,
     pub message: String,
     pub part_path: Option<PathBuf>,
+    pub(crate) reported: bool,
     last_bytes: u64,
     last_time: Option<Instant>,
 }
@@ -44,8 +46,10 @@ impl Default for DownloadState {
             downloaded: 0,
             total: 0,
             speed_bps: 0,
+            file_name: None,
             message: String::new(),
             part_path: None,
+            reported: false,
             last_bytes: 0,
             last_time: None,
         }
@@ -117,9 +121,10 @@ pub fn start_download(vm: String, dest_dir: PathBuf) -> Result<DownloadJob> {
         let dest_dir = task_dest;
         let hooks = DownloadHooks {
             cancel: &task_cancel,
-            on_metadata: &|total, _name| {
+            on_metadata: &|total, name| {
                 let mut s = task_state.lock().unwrap();
                 s.total = total;
+                s.file_name = Some(name.to_string());
                 s.phase = Phase::Downloading;
             },
             on_progress: &|bytes| {

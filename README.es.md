@@ -123,9 +123,10 @@ Cuatro pestañas manejadas por teclado — `Stats`, `Machines`, `Releases` y `Su
 | `a` | **Popup de cuenta** — muestra la cuenta activa: `Enter` abre el popup de login para cambiar de cuenta, `l` cierra sesión, `Esc` cierra |
 | `l` | **Cambiar idioma de la UI** — inglés ↔ español, en todas partes, se conserva entre sesiones |
 | `s` | **Solo Machines** — ciclo de orden por tamaño: orden del sitio → menor primero → mayor primero |
-| `h` | **Solo Machines** — alternar ocultar máquinas totalmente PWNED (pulsa otra vez para mostrarlas) |
+| `h` | **Ayuda** — referencia desplazable de atajos de teclado (EN/ES). |
+| `x` | **Solo Machines** — alternar ocultar máquinas totalmente PWNED (pulsa otra vez para mostrarlas) |
 | `f` | **Solo Machines** — popup de un solo campo: el servidor decide si es la flag user o root. El resultado aparece en un popup (`Flag: ✓ ACEPTADA` / `Flag: ✗ INCORRECTA`) y los datos se refrescan al cerrarlo. Las máquinas PWNED muestran un recuadro de solo lectura. |
-| `d` | **Solo Machines** — popup de descarga: elige la carpeta de destino (se recuerda entre sesiones, con autocompletado de rutas `Tab` al estilo zsh), enlace de MEGA resuelto automáticamente y descarga en streaming con progreso en vivo en el overlay de Descargas. Verificado con MAC antes de terminar. |
+| `d` | **Solo Machines** — popup de descarga: elige la carpeta de destino (se recuerda entre sesiones, con autocompletado de rutas `Tab` al estilo zsh), enlace de MEGA resuelto automáticamente y descarga en streaming con progreso en vivo en el pie y en el overlay de Descargas (`o`). Verificado con MAC antes de terminar. |
 | `w` | **Solo Machines** — popup de writeups de la comunidad de la máquina seleccionada: `j`/`k` para seleccionar, `Enter` abre el enlace en tu navegador, `Esc` cierra. |
 | `u` | **Solo Machines** — envía un writeup para una máquina pwned: URL, tipo (Text/Video) e idioma; `←`/`→` cicla los selects (también con popup de resultado). |
 | `v` | **Solo Submissions** — popup de envío de tu VM: nombre, URL de descarga, flags user/root, tags, nivel (`←`/`→` cicla Fácil → Media → Difícil), notas y writeup (ambos opcionales). El servidor valida el envío y su veredicto se muestra en el popup de resultado. |

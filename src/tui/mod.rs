@@ -48,6 +48,8 @@ pub enum PopupKind {
     SubmissionForm,
     /// Submission rules viewer (`i` on the Submissions tab).
     Rules,
+    /// Keyboard shortcuts help (`h` anywhere).
+    Help,
 }
 
 /// Why the credentials popup was opened — drives its yellow notice line.
@@ -76,6 +78,8 @@ pub struct Popup {
     pub readonly: bool,
     /// Path-completion candidates for the Download popup (Tab).
     pub completions: Vec<String>,
+    /// First visible line for scrollable read-only popups (`Help`, `Rules`).
+    pub scroll: usize,
 }
 
 impl Popup {
@@ -178,7 +182,8 @@ impl Popup {
         let completed = common_prefix(&matches);
         // Replace the partial component with the completed prefix, keeping
         // the original `~` spelling the user typed.
-        let mut new_raw = raw[..raw.len().saturating_sub(partial.chars().count())].to_string();
+        let prefix = raw.strip_suffix(&partial).unwrap_or("");
+        let mut new_raw = prefix.to_string();
         new_raw.push_str(&completed);
         if matches.len() == 1 && completed == matches[0] && !ends_with_sep {
             new_raw.push(std::path::MAIN_SEPARATOR);
@@ -548,7 +553,11 @@ impl AppState {
 
     /// Toggles the downloads overlay; harmless while popups are open.
     pub fn toggle_downloads_view(&mut self) {
-        if self.popup.is_none() && self.report.is_none() {
+        if self.popup.is_none()
+            && self.report.is_none()
+            && self.writeups_popup.is_none()
+            && !self.quit_confirm
+        {
             self.view = match self.view {
                 ViewMode::Normal => ViewMode::Downloads,
                 ViewMode::Downloads => ViewMode::Normal,
@@ -564,18 +573,19 @@ impl AppState {
             .unwrap_or(self.download_jobs.len().saturating_sub(1))
     }
 
-    /// Quitting with downloads in flight asks first: leaving cancels them.
+    /// Quitting with downloads in flight or queued asks first: leaving cancels them.
     pub fn request_quit(&mut self) {
-        if self.active_downloads() > 0 {
+        if self.active_downloads() > 0 || !self.download_queue.is_empty() {
             self.quit_confirm = true;
             return;
         }
         self.quit = true;
     }
 
-    /// One row per active download, e.g. "↓ Xslib 42%".
+    /// One row per active or queued download, e.g. "↓ Xslib 42%".
     pub fn active_download_rows(&self) -> Vec<String> {
-        self.download_jobs
+        let mut rows: Vec<String> = self
+            .download_jobs
             .iter()
             .filter(|job| job.is_active())
             .map(|job| {
@@ -588,7 +598,55 @@ impl AppState {
                     .unwrap_or_default();
                 format!("↓ {}{pct}", job.vm)
             })
-            .collect()
+            .collect();
+        for (vm, _) in &self.download_queue {
+            rows.push(fmt_key(self.lang.t(Key::DownloadBarQueued), &[vm]));
+        }
+        rows
+    }
+
+    /// Footer progress lines for every active (or queued) transfer, in start order,
+    /// matching nyx-tui's inline download bar.
+    pub fn download_progress_lines(&self) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .download_jobs
+            .iter()
+            .filter_map(|job| {
+                let state = job.state.lock().unwrap();
+                match state.phase {
+                    downloads::Phase::Resolving => {
+                        Some(fmt_key(self.lang.t(Key::DownloadBarResolving), &[&job.vm]))
+                    }
+                    downloads::Phase::Downloading => {
+                        let file = state.file_name.as_deref().unwrap_or(&job.vm);
+                        if state.total == 0 {
+                            Some(format!(
+                                "↓ {} · {} · {}",
+                                job.vm,
+                                file,
+                                downloads::fmt_bytes(state.downloaded)
+                            ))
+                        } else {
+                            Some(format!(
+                                "↓ {} · {} · {}/{} · {}/s",
+                                job.vm,
+                                file,
+                                downloads::fmt_bytes(state.downloaded),
+                                downloads::fmt_bytes(state.total),
+                                downloads::fmt_bytes(state.speed_bps)
+                            ))
+                        }
+                    }
+                    downloads::Phase::Done
+                    | downloads::Phase::Failed
+                    | downloads::Phase::Cancelled => None,
+                }
+            })
+            .collect();
+        for (vm, _) in &self.download_queue {
+            lines.push(fmt_key(self.lang.t(Key::DownloadBarQueued), &[vm]));
+        }
+        lines
     }
 
     /// Shows a status message in the footer, auto-expiring after 5 seconds.
@@ -597,13 +655,49 @@ impl AppState {
         self.status_expiry = Some(std::time::Instant::now() + STATUS_LIFETIME);
     }
 
-    /// Clears expired status messages; called once per event-loop iteration.
+    /// Clears expired status messages and surfaces newly finished downloads as
+    /// one-shot status notices; called once per event-loop iteration.
     pub fn tick(&mut self) {
         if let Some(expiry) = self.status_expiry {
             if std::time::Instant::now() >= expiry {
                 self.status = None;
                 self.status_expiry = None;
             }
+        }
+
+        let mut finished: Option<String> = None;
+        for job in &self.download_jobs {
+            let mut state = job.state.lock().unwrap();
+            if state.reported {
+                continue;
+            }
+            match state.phase {
+                downloads::Phase::Done => {
+                    state.reported = true;
+                    finished = Some(fmt_key(
+                        self.lang.t(Key::StatusDownloadDone),
+                        &[&job.vm, &state.message],
+                    ));
+                }
+                downloads::Phase::Failed => {
+                    state.reported = true;
+                    finished = Some(fmt_key(
+                        self.lang.t(Key::StatusDownloadFailed),
+                        &[&state.message],
+                    ));
+                }
+                downloads::Phase::Cancelled => {
+                    state.reported = true;
+                    finished = Some(fmt_key(
+                        self.lang.t(Key::StatusDownloadCancelled),
+                        &[&job.vm],
+                    ));
+                }
+                downloads::Phase::Resolving | downloads::Phase::Downloading => {}
+            }
+        }
+        if let Some(message) = finished {
+            self.set_status(message);
         }
     }
 
@@ -829,7 +923,7 @@ impl AppState {
         let allowed = match kind {
             PopupKind::Flag | PopupKind::Download | PopupKind::Upload => self.tab == Tab::Machines,
             PopupKind::SubmissionForm | PopupKind::Rules => self.tab == Tab::Submissions,
-            PopupKind::Config | PopupKind::Account => false, // managed elsewhere
+            PopupKind::Config | PopupKind::Account | PopupKind::Help => false, // managed elsewhere
         };
         if !allowed {
             self.set_status(match kind {
@@ -839,7 +933,7 @@ impl AppState {
                 PopupKind::SubmissionForm | PopupKind::Rules => {
                     self.lang.t(Key::StatusSubmitOnlySubmissions)
                 }
-                PopupKind::Config | PopupKind::Account => return, // never opened ad hoc
+                PopupKind::Config | PopupKind::Account | PopupKind::Help => return, // never opened ad hoc
             });
             return;
         }
@@ -864,6 +958,7 @@ impl AppState {
                     notice: None,
                     readonly: true,
                     completions: Vec::new(),
+                    scroll: 0,
                 });
                 return;
             }
@@ -876,6 +971,7 @@ impl AppState {
                 notice: None,
                 readonly: false,
                 completions: Vec::new(),
+                scroll: 0,
             });
             return;
         }
@@ -906,6 +1002,7 @@ impl AppState {
                 notice: None,
                 readonly: false,
                 completions: Vec::new(),
+                scroll: 0,
             });
             return;
         }
@@ -924,6 +1021,7 @@ impl AppState {
                 notice: None,
                 readonly: false,
                 completions: Vec::new(),
+                scroll: 0,
             });
             return;
         }
@@ -937,6 +1035,7 @@ impl AppState {
             notice: None,
             readonly: false,
             completions: Vec::new(),
+            scroll: 0,
         });
     }
 
@@ -961,6 +1060,7 @@ impl AppState {
             notice: Some(notice.to_string()),
             readonly: false,
             completions: Vec::new(),
+            scroll: 0,
         });
     }
 
@@ -988,6 +1088,7 @@ impl AppState {
             notice: None,
             readonly: true,
             completions: Vec::new(),
+            scroll: 0,
         });
     }
 
@@ -1044,6 +1145,7 @@ impl AppState {
             notice: Some(self.lang.t(Key::SubmitFormNotice).to_string()),
             readonly: false,
             completions: Vec::new(),
+            scroll: 0,
         });
     }
 
@@ -1070,6 +1172,29 @@ impl AppState {
             notice: None,
             readonly: true,
             completions: Vec::new(),
+            scroll: 0,
+        });
+    }
+
+    /// Read-only shortcut reference (`h`), available on every tab.
+    pub fn open_help_popup(&mut self) {
+        if self.popup.is_some()
+            || self.report.is_some()
+            || self.writeups_popup.is_some()
+            || self.quit_confirm
+        {
+            return;
+        }
+        self.popup = Some(Popup {
+            kind: PopupKind::Help,
+            vm: self.lang.t(Key::HelpTitle).to_string(),
+            buffers: vec![self.lang.t(Key::HelpText).to_string()],
+            field: 0,
+            selects: Vec::new(),
+            notice: None,
+            readonly: true,
+            completions: Vec::new(),
+            scroll: 0,
         });
     }
 
@@ -1146,7 +1271,7 @@ impl AppState {
                     }
                     .to_string(),
                     PopupKind::Download => "dir".to_string(),
-                    PopupKind::Account | PopupKind::Rules => return None,
+                    PopupKind::Account | PopupKind::Rules | PopupKind::Help => return None,
                 };
                 Some((name, buffer.trim().to_string()))
             })
@@ -1227,12 +1352,14 @@ impl AppState {
         }
 
         if popup.kind == PopupKind::Download {
+            // Expand leading `~` once at confirm time so `~/...` never creates
+            // a literal `./~` directory.
+            let dir = expand_tilde(&values[0].1);
             // Enforce the parallel cap here: overflow goes to the queue.
             let active = self.active_downloads();
             if active >= downloads::PARALLEL_DOWNLOADS {
                 let vm = popup.vm.clone();
-                self.download_queue
-                    .push_back((popup.vm, PathBuf::from(values[0].1.clone())));
+                self.download_queue.push_back((popup.vm, dir));
                 self.set_status(fmt_key(
                     self.lang.t(Key::StatusDownloadQueued),
                     &[&vm, &downloads::PARALLEL_DOWNLOADS.to_string()],
@@ -1568,7 +1695,7 @@ fn spawn_action(
     let mut started = false;
     match action.kind {
         PopupKind::Download => {
-            let dir = PathBuf::from(action.values[0].1.clone());
+            let dir = expand_tilde(&action.values[0].1);
             match downloads::start_download(action.vm.clone(), dir) {
                 Ok(job) => {
                     app.set_status(fmt_key(
@@ -1601,13 +1728,14 @@ fn spawn_action(
                 let _ = tx.send(HostOutcome::Configured { username, result });
             });
         }
-        PopupKind::Account | PopupKind::Rules => {
+        PopupKind::Account | PopupKind::Rules | PopupKind::Help => {
             unreachable!("no action is queued from these popups")
         }
         PopupKind::Flag | PopupKind::Upload | PopupKind::SubmissionForm => {
             let label = match action.kind {
                 PopupKind::Flag => fmt_key(app.lang.t(Key::FetchingFlag), &[&action.vm]),
                 PopupKind::Upload => fmt_key(app.lang.t(Key::FetchingWriteup), &[&action.vm]),
+                PopupKind::SubmissionForm => app.lang.t(Key::FetchingSubmittingVm).to_string(),
                 _ => unreachable!("handled above"),
             };
             started = true;
@@ -1754,7 +1882,9 @@ fn queued_status_key(kind: PopupKind) -> Key {
         PopupKind::Upload => Key::StatusQueuedWriteup,
         PopupKind::Download => Key::StatusQueuedDownload,
         PopupKind::Config | PopupKind::Account => unreachable!("handled above"),
-        PopupKind::SubmissionForm | PopupKind::Rules => unreachable!("handled above"),
+        PopupKind::SubmissionForm | PopupKind::Rules | PopupKind::Help => {
+            unreachable!("handled above")
+        }
     }
 }
 
@@ -1850,9 +1980,24 @@ fn handle_popup_key(app: &mut AppState, key: crossterm::event::KeyEvent) -> bool
 
     // Popup input mode captures everything first.
     if app.popup.is_some() {
-        // Read-only popups (already-PWNED machines) just close.
+        // Read-only popups (`Help`, `Rules`, already-PWNED) scroll and close.
         if app.popup.as_ref().map(|p| p.readonly) == Some(true) {
             match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(p) = app.popup.as_mut() {
+                        p.scroll = p.scroll.saturating_add(1);
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(p) = app.popup.as_mut() {
+                        p.scroll = p.scroll.saturating_sub(1);
+                    }
+                }
+                KeyCode::Char('h')
+                    if app.popup.as_ref().map(|p| p.kind) == Some(PopupKind::Help) =>
+                {
+                    app.popup = None;
+                }
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => app.popup = None,
                 _ => {}
             }
@@ -1957,6 +2102,24 @@ fn handle_filter_key(app: &mut AppState, code: KeyCode) {
 
 /// Keys in the dashboard's normal mode.
 fn handle_normal_key(app: &mut AppState, code: KeyCode) {
+    if app.view == ViewMode::Downloads {
+        match code {
+            KeyCode::Char('o') | KeyCode::Esc => app.view = ViewMode::Normal,
+            KeyCode::Char('c') => {
+                // Cancel the most recent active download from the overlay.
+                if let Some(job) = app.download_jobs.iter().rev().find(|job| job.is_active()) {
+                    job.request_cancel();
+                    app.set_status(fmt_key(app.lang.t(Key::StatusCancelDownload), &[&job.vm]));
+                }
+            }
+            KeyCode::Char('l') => app.toggle_language(),
+            KeyCode::Char('h') => app.open_help_popup(),
+            KeyCode::Char('q') => app.request_quit(),
+            _ => {}
+        }
+        return;
+    }
+
     match code {
         KeyCode::Char('q') | KeyCode::Esc => app.request_quit(),
         KeyCode::Char('r') => app.request_refresh(),
@@ -1969,7 +2132,8 @@ fn handle_normal_key(app: &mut AppState, code: KeyCode) {
         KeyCode::Char('a') => app.open_account_popup(),
         KeyCode::Char('l') => app.toggle_language(),
         KeyCode::Char('s') => app.cycle_machine_sort(),
-        KeyCode::Char('h') if app.tab == Tab::Machines => app.toggle_hide_pwned(),
+        KeyCode::Char('x') if app.tab == Tab::Machines => app.toggle_hide_pwned(),
+        KeyCode::Char('h') => app.open_help_popup(),
         KeyCode::Char('f') => app.open_action_popup(PopupKind::Flag),
         KeyCode::Char('u') => app.open_action_popup(PopupKind::Upload),
         KeyCode::Char('d') => app.open_action_popup(PopupKind::Download),
@@ -1977,13 +2141,6 @@ fn handle_normal_key(app: &mut AppState, code: KeyCode) {
         KeyCode::Char('v') if app.tab == Tab::Submissions => app.open_submission_form(),
         KeyCode::Char('i') if app.tab == Tab::Submissions => app.open_rules_popup(),
         KeyCode::Char('o') => app.toggle_downloads_view(),
-        KeyCode::Char('c') if app.view == ViewMode::Downloads => {
-            // Cancel the most recent active download from the overlay.
-            if let Some(job) = app.download_jobs.iter().rev().find(|job| job.is_active()) {
-                job.request_cancel();
-                app.set_status(fmt_key(app.lang.t(Key::StatusCancelDownload), &[&job.vm]));
-            }
-        }
         _ => {}
     }
 }
@@ -2853,5 +3010,144 @@ mod tests {
         assert_eq!(state.tab, Tab::Stats);
         state.toggle_hide_pwned();
         assert!(!state.hide_pwned);
+    }
+
+    #[test]
+    fn h_opens_help_and_x_toggles_hide_pwned() {
+        let mut state = app();
+        // `h` works on any tab and opens scrollable Help.
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::empty()),
+        );
+        let popup = state.popup.as_ref().expect("help popup");
+        assert_eq!(popup.kind, PopupKind::Help);
+        assert_eq!(popup.scroll, 0);
+
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
+        );
+        assert_eq!(state.popup.as_ref().unwrap().scroll, 1);
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()),
+        );
+        assert_eq!(state.popup.as_ref().unwrap().scroll, 0);
+
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+        );
+        assert!(state.popup.is_none());
+
+        // `x` toggles hide_pwned on Machines tab.
+        state.next_tab(); // Machines
+        assert!(!state.hide_pwned);
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()),
+        );
+        assert!(state.hide_pwned);
+    }
+
+    #[test]
+    fn downloads_view_esc_closes_overlay_not_quit() {
+        let mut state = app();
+        state.view = ViewMode::Downloads;
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+        );
+        assert_eq!(state.view, ViewMode::Normal);
+        assert!(!state.quit);
+    }
+
+    #[test]
+    fn download_tilde_path_expands_to_home() {
+        let expanded = expand_tilde("~/vm-labs");
+        let home = home::home_dir().unwrap();
+        assert_eq!(expanded, home.join("vm-labs"));
+        assert_eq!(expand_tilde("~"), home);
+    }
+
+    #[test]
+    fn complete_destination_handles_utf8_prefix() {
+        let base = std::env::temp_dir().join(format!("hmv-tui-utf8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("café-lab")).unwrap();
+
+        let mut state = app();
+        state.next_tab();
+        state.open_action_popup(PopupKind::Download);
+        state.popup.as_mut().unwrap().buffers[0] = format!("{}/café", base.display());
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        );
+        assert_eq!(
+            state.popup.as_ref().unwrap().buffers[0],
+            format!("{}/café-lab/", base.display())
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn tick_reports_finished_download_once() {
+        let mut state = app();
+        let job = std::sync::Arc::new(downloads::DownloadJob {
+            vm: "Arcane".into(),
+            state: std::sync::Arc::new(std::sync::Mutex::new({
+                let mut dl = downloads::DownloadState::default();
+                dl.phase = downloads::Phase::Done;
+                dl.message = "/tmp/arcane.zip".into();
+                dl
+            })),
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        state.download_jobs.push(job);
+        assert!(state.download_progress_lines().is_empty());
+
+        state.tick();
+        assert!(state.status.as_deref().unwrap().contains("Arcane"));
+        state.status = None;
+        state.tick();
+        assert!(state.status.is_none(), "finished download reported twice");
+    }
+
+    #[test]
+    fn submission_form_spawn_action_does_not_panic() {
+        let mut state = app();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host = HostOps {
+            refetch: std::sync::Arc::new(|| Ok(TuiData::empty())),
+            run_action: std::sync::Arc::new(|_| {
+                Ok(ActionReport {
+                    title: String::new(),
+                    entries: Vec::new(),
+                    changed: false,
+                    status: String::new(),
+                })
+            }),
+            run_writeups_fetch: std::sync::Arc::new(|_| Ok(Vec::new())),
+            run_config: std::sync::Arc::new(|_, _| Ok(())),
+            logout: std::sync::Arc::new(|| Ok(())),
+            fetch_submissions: std::sync::Arc::new(|| Ok((Vec::new(), None, Vec::new()))),
+        };
+        let started = spawn_action(
+            &mut state,
+            TuiAction {
+                kind: PopupKind::SubmissionForm,
+                vm: String::new(),
+                values: vec![("name".into(), "TestVM".into())],
+            },
+            &tx,
+            &host,
+        );
+        assert!(started);
+        assert_eq!(
+            state.fetching.as_deref(),
+            Some(Lang::En.t(Key::FetchingSubmittingVm))
+        );
     }
 }

@@ -32,11 +32,12 @@ const LINK: Color = NORD10; // writeup URLs
 const HL_BG: Color = NORD1; // selected-row background
 
 pub fn draw(frame: &mut Frame, app: &mut AppState) {
+    let download_rows = app.download_progress_lines().len() as u16;
     let [header, tabs, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
-        Constraint::Length(1),
+        Constraint::Length(2 + download_rows),
     ])
     .areas(frame.area());
 
@@ -376,41 +377,55 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup, app: &AppState) {
         return;
     }
 
-    // Submission rules viewer: readonly text popup (`i` on Submissions).
-    if popup.kind == PopupKind::Rules {
-        let width = area.width.saturating_sub(8).max(100);
-        let height = area.height.saturating_sub(4).max(20);
-        let box_area = popup_area(area, width, height);
-        frame.render_widget(Clear, box_area);
-        let rules_lines: Vec<Line> = popup
+    // Scrollable read-only popups (`Help` anywhere, `Rules` on Submissions).
+    if matches!(popup.kind, PopupKind::Rules | PopupKind::Help) {
+        let width = area.width.saturating_sub(8).max(40).min(area.width);
+        let title = if popup.kind == PopupKind::Help {
+            lang.t(Key::HelpTitle)
+        } else {
+            lang.t(Key::RulesTitle)
+        };
+        let all_lines: Vec<Line> = popup
             .buffers
             .first()
             .map(|text| {
                 text.lines()
                     .map(|l| {
-                        Line::from(Span::styled(
-                            l.to_string(),
-                            if l.starts_with(char::is_numeric) {
-                                Style::new().fg(ACCENT).bold()
-                            } else {
-                                Style::new().fg(BRIGHT)
-                            },
-                        ))
+                        let style = if (popup.kind == PopupKind::Help && l.starts_with('['))
+                            || (popup.kind == PopupKind::Rules && l.starts_with(char::is_numeric))
+                        {
+                            Style::new().fg(ACCENT).bold()
+                        } else {
+                            Style::new().fg(BRIGHT)
+                        };
+                        Line::from(Span::styled(l.to_string(), style))
                     })
                     .collect()
             })
             .unwrap_or_default();
+        let available = usize::from(area.height.saturating_sub(4)).max(1);
+        let total = all_lines.len();
+        let start = popup.scroll.min(total.saturating_sub(1));
+        let mut lines: Vec<Line> = all_lines.into_iter().skip(start).take(available).collect();
+        if start > 0 {
+            lines.insert(
+                0,
+                Line::from(Span::styled(format!("↑ {start}"), Style::new().dim())),
+            );
+            lines.truncate(available);
+        }
+        let height = (lines.len() as u16 + 4).min(area.height);
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            lang.t(Key::HintHelpScroll),
+            Style::new().dim(),
+        )));
+        let box_area = popup_area(area, width, height);
+        frame.render_widget(Clear, box_area);
         let block = Block::bordered()
-            .title(Span::styled(
-                lang.t(Key::RulesTitle),
-                Style::new().fg(ACCENT).bold(),
-            ))
-            .title_bottom(Span::styled(
-                lang.t(Key::PopupPwnedClose),
-                Style::new().dim(),
-            ))
+            .title(Span::styled(title, Style::new().fg(ACCENT).bold()))
             .border_style(Style::new().fg(ACCENT));
-        frame.render_widget(Paragraph::new(rules_lines).block(block), box_area);
+        frame.render_widget(Paragraph::new(lines).block(block), box_area);
         return;
     }
 
@@ -471,10 +486,6 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup, app: &AppState) {
             )));
             lines.push(Line::from(""));
         }
-        let fallback_names: Vec<String> = crate::modules::submissions::fallback_form_fields()
-            .iter()
-            .map(|f| f.name.clone())
-            .collect();
         for (index, field) in form_fields.iter().enumerate() {
             let active = index == popup.field;
             let marker = if active { "▏" } else { "" };
@@ -485,26 +496,28 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup, app: &AppState) {
             } else {
                 Style::new().dim()
             };
-            // Prefer the translated label for known fallback field names;
-            // scraped fields keep their site label.
-            let label = match fallback_names.get(index).map(String::as_str) {
-                Some("name") => lang.t(Key::SubmitName),
-                Some("url") => lang.t(Key::SubmitUrl),
-                Some("user_flag") => lang.t(Key::SubmitUserFlag),
-                Some("root_flag") => lang.t(Key::SubmitRootFlag),
-                Some("writeup") => lang.t(Key::SubmitWriteup),
-                Some("tags") => lang.t(Key::SubmitTags),
-                Some("notes") => lang.t(Key::SubmitNotes),
-                Some("level") => lang.t(Key::SubmitLevel),
-                _ => field.label.as_str(),
+            // Match translated labels by scraped field name; unknown fields
+            // keep their site label.
+            let label = match field.name.as_str() {
+                "name" => lang.t(Key::SubmitName),
+                "url" => lang.t(Key::SubmitUrl),
+                "user_flag" => lang.t(Key::SubmitUserFlag),
+                "root_flag" => lang.t(Key::SubmitRootFlag),
+                "writeup" => lang.t(Key::SubmitWriteup),
+                "tags" => lang.t(Key::SubmitTags),
+                "notes" => lang.t(Key::SubmitNotes),
+                "level" => lang.t(Key::SubmitLevel),
+                _ if !field.label.is_empty() => field.label.as_str(),
+                _ => field.name.as_str(),
             };
             lines.push(Line::from(Span::styled(
                 format!("{label}{required_mark} {raw}{marker}"),
                 style,
             )));
         }
-        let height = (form_fields.len() as u16 + 5).clamp(8, 22);
-        let box_area = popup_area(area, area.width.saturating_sub(8).max(100), height);
+        let height = (form_fields.len() as u16 + 5).clamp(8, 22).min(area.height);
+        let width = area.width.saturating_sub(8).max(40).min(area.width);
+        let box_area = popup_area(area, width, height);
         frame.render_widget(Clear, box_area);
         let block = Block::bordered()
             .title(Span::styled(
@@ -554,7 +567,7 @@ fn render_text_popup(frame: &mut Frame, box_area: Rect, popup: &Popup, lang: Lan
         PopupKind::SubmissionForm => {
             unreachable!("rendered by the submission form branch above")
         }
-        PopupKind::Account | PopupKind::Rules => {
+        PopupKind::Account | PopupKind::Rules | PopupKind::Help => {
             unreachable!("rendered by the branches above")
         }
     };
@@ -914,6 +927,8 @@ fn draw_writeups_popup(
 }
 
 fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
     Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -923,7 +938,7 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 fn empty_downloads_line(app: &AppState, lines: &mut Vec<Line>) {
-    if app.download_jobs.is_empty() {
+    if app.download_jobs.is_empty() && app.download_queue.is_empty() {
         lines.push(Line::from(Span::styled(
             app.lang.t(Key::DownloadsEmpty),
             Style::new().dim(),
@@ -940,8 +955,8 @@ fn selected_download_index(app: &AppState) -> usize {
 }
 
 fn draw_downloads(frame: &mut Frame, area: Rect, app: &AppState) {
-    let jobs = app.download_jobs.len();
-    let height = (jobs as u16 + 5).clamp(6, 16);
+    let total_entries = app.download_jobs.len() + app.download_queue.len();
+    let height = (total_entries as u16 + 5).clamp(6, 16).min(area.height);
     let box_area = popup_area(area, 96, height);
     frame.render_widget(Clear, box_area);
 
@@ -949,7 +964,9 @@ fn draw_downloads(frame: &mut Frame, area: Rect, app: &AppState) {
     empty_downloads_line(app, &mut lines);
 
     let selected_index = selected_download_index(app);
+    let max_rows = usize::from(box_area.height).saturating_sub(4).max(1);
 
+    let mut entry_lines: Vec<Line> = Vec::new();
     for (index, job) in app.download_jobs.iter().enumerate() {
         // Lock once and read everything through the guard: `is_active()`
         // and `download_selected()` would re-lock the same non-reentrant
@@ -973,11 +990,11 @@ fn draw_downloads(frame: &mut Frame, area: Rect, app: &AppState) {
             ]),
             Phase::Downloading => {
                 let ratio = if state.total > 0 {
-                    state.downloaded as f64 / state.total as f64
+                    (state.downloaded as f64 / state.total as f64).clamp(0.0, 1.0)
                 } else {
                     0.0
                 };
-                let filled = (ratio * 24.0).round() as usize;
+                let filled = ((ratio * 24.0).round() as usize).min(24);
                 let bar = format!(
                     "[{}{}]",
                     "█".repeat(filled),
@@ -1019,8 +1036,23 @@ fn draw_downloads(frame: &mut Frame, area: Rect, app: &AppState) {
                 Span::styled(format!("• {} cancelled", job.vm), Style::new().dim()),
             ]),
         };
-        lines.push(line);
+        entry_lines.push(line);
     }
+
+    for (vm, _) in &app.download_queue {
+        entry_lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                super::fmt_key(app.lang.t(Key::DownloadsQueued), &[vm]),
+                Style::new().dim(),
+            ),
+        ]));
+    }
+
+    // Keep the most recent entries visible so new jobs and the bottom hint
+    // are never clipped when many downloads accumulate.
+    let skip = entry_lines.len().saturating_sub(max_rows);
+    lines.extend(entry_lines.into_iter().skip(skip));
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -1038,69 +1070,79 @@ fn draw_downloads(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &AppState) {
-    let [keys_area, status_area] =
-        Layout::horizontal([Constraint::Min(80), Constraint::Fill(1)]).areas(area);
+    // Row 1: context actions. Middle rows: one dedicated line per active or
+    // queued transfer (nyx-tui style). Bottom row: global keys + status.
+    let download_lines = app.download_progress_lines();
+    let extra = download_lines.len() as u16;
+    let [actions_area, downloads_area, bottom_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(extra),
+        Constraint::Length(1),
+    ])
+    .areas(area);
 
-    let keys: String = if app.popup.is_some() {
-        match app.popup.as_ref().map(|p| p.kind) {
-            Some(PopupKind::Config) => app.lang.t(Key::PopupHintConfig).to_string(),
-            Some(PopupKind::Account) => app.lang.t(Key::PopupAccountHint).to_string(),
+    let actions: String = if app.popup.is_some() {
+        match app.popup.as_ref() {
+            Some(p) if p.kind == PopupKind::Config => app.lang.t(Key::PopupHintConfig).to_string(),
+            Some(p) if p.kind == PopupKind::Account => {
+                app.lang.t(Key::PopupAccountHint).to_string()
+            }
+            Some(p) if p.kind == PopupKind::Download => {
+                app.lang.t(Key::PopupHintDownload).to_string()
+            }
+            Some(p) if p.kind == PopupKind::SubmissionForm => {
+                app.lang.t(Key::SubmitFormHint).to_string()
+            }
+            Some(p) if matches!(p.kind, PopupKind::Rules | PopupKind::Help) => {
+                app.lang.t(Key::HintHelpScroll).to_string()
+            }
+            Some(p) if p.readonly => app.lang.t(Key::PopupPwnedClose).to_string(),
             _ => app.lang.t(Key::PopupHintFlag).to_string(),
         }
+    } else if app.view == ViewMode::Downloads {
+        app.lang.t(Key::DownloadsHint).to_string()
     } else {
         match app.input_mode {
             InputMode::Filter => app.lang.t(Key::FooterFilterMode).to_string(),
-            InputMode::Normal => {
-                let list_keys = match app.tab {
-                    Tab::Stats => String::new(),
-                    Tab::Machines => format!(
-                        "{} · {} · {} · {} · {} · {} · {} · ",
-                        app.lang.t(Key::FooterJkMove),
-                        app.lang.t(Key::FooterFilter),
-                        app.lang.t(Key::FooterSizeSort),
-                        app.lang.t(Key::FooterHidePwned),
-                        app.lang.t(Key::FooterFlag),
-                        app.lang.t(Key::FooterDownload),
-                        app.lang.t(Key::FooterWriteup)
-                    ),
-                    Tab::Releases => format!(
-                        "{} · {} · ",
-                        app.lang.t(Key::FooterJkMove),
-                        app.lang.t(Key::FooterFilter)
-                    ),
-                    Tab::Submissions => format!(
-                        "{} · {} · {} · {} · ",
-                        app.lang.t(Key::FooterJkMove),
-                        app.lang.t(Key::FooterFilter),
-                        app.lang.t(Key::FooterSubmitVm),
-                        app.lang.t(Key::FooterRules)
-                    ),
-                };
-                let common = format!(
-                    "{} · {} · {}: {} · {}",
-                    app.lang.t(Key::FooterAccount),
-                    app.lang.t(Key::FooterRefresh),
-                    app.lang.t(Key::FooterLangHint),
-                    app.lang.other().label(),
-                    app.lang.t(Key::FooterQuit)
-                );
-                if list_keys.is_empty() {
-                    format!("{} · {}", app.lang.t(Key::FooterTabSwitch), common)
-                } else {
-                    format!(
-                        "{} · {}{}",
-                        app.lang.t(Key::FooterTabSwitch),
-                        list_keys,
-                        common
-                    )
-                }
-            }
+            InputMode::Normal => match app.tab {
+                Tab::Stats => app.lang.t(Key::FooterTabSwitch).to_string(),
+                Tab::Machines => format!(
+                    "{} · {} · {} · {} · {} · {} · {}",
+                    app.lang.t(Key::FooterJkMove),
+                    app.lang.t(Key::FooterFilter),
+                    app.lang.t(Key::FooterSizeSort),
+                    app.lang.t(Key::FooterHidePwned),
+                    app.lang.t(Key::FooterFlag),
+                    app.lang.t(Key::FooterDownload),
+                    app.lang.t(Key::FooterWriteup)
+                ),
+                Tab::Releases => format!(
+                    "{} · {}",
+                    app.lang.t(Key::FooterJkMove),
+                    app.lang.t(Key::FooterFilter)
+                ),
+                Tab::Submissions => format!(
+                    "{} · {} · {} · {}",
+                    app.lang.t(Key::FooterJkMove),
+                    app.lang.t(Key::FooterFilter),
+                    app.lang.t(Key::FooterSubmitVm),
+                    app.lang.t(Key::FooterRules)
+                ),
+            },
         }
     };
     frame.render_widget(
-        Paragraph::new(Span::styled(keys, Style::new().dim())),
-        keys_area,
+        Paragraph::new(Span::styled(actions, Style::new().dim())),
+        actions_area,
     );
+
+    if !download_lines.is_empty() {
+        let lines: Vec<Line> = download_lines
+            .into_iter()
+            .map(|line| Line::from(Span::styled(line, Style::new().fg(OK).bold())))
+            .collect();
+        frame.render_widget(Paragraph::new(lines), downloads_area);
+    }
 
     let status = if let Some(label) = &app.fetching {
         Span::styled(format!("⟳ {label}"), Style::new().fg(WARN).bold())
@@ -1112,10 +1154,38 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &AppState) {
             _ => Span::raw(""),
         }
     };
-    frame.render_widget(
-        Paragraph::new(status).alignment(ratatui::layout::Alignment::Right),
-        status_area,
+    let status_width = if status.content.is_empty() {
+        0
+    } else {
+        (status.content.chars().count() as u16 + 1)
+            .max(24)
+            .min(bottom_area.width / 2)
+    };
+    let [global_area, status_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(status_width)])
+            .areas(bottom_area);
+
+    let global = format!(
+        "{} · {} · {}: {} · {} · {} · {} · {}",
+        app.lang.t(Key::FooterTabSwitch),
+        app.lang.t(Key::FooterAccount),
+        app.lang.t(Key::FooterLangHint),
+        app.lang.other().label(),
+        app.lang.t(Key::FooterRefresh),
+        app.lang.t(Key::FooterDownloads),
+        app.lang.t(Key::FooterHelp),
+        app.lang.t(Key::FooterQuit)
     );
+    frame.render_widget(
+        Paragraph::new(Span::styled(global, Style::new().dim())),
+        global_area,
+    );
+    if status_width > 0 {
+        frame.render_widget(
+            Paragraph::new(status).alignment(ratatui::layout::Alignment::Right),
+            status_area,
+        );
+    }
 }
 
 /// How many table rows fit in `height` (border 2 + header 1).
@@ -1216,6 +1286,7 @@ mod tests {
             notice: None,
             readonly: false,
             completions: Vec::new(),
+            scroll: 0,
         }
     }
 
@@ -1360,7 +1431,7 @@ mod tests {
         let mut state = app();
         state.data.submission_form = vec![
             FormField {
-                name: "vmname".into(),
+                name: "name".into(),
                 label: String::new(),
                 kind: FieldKind::Text,
                 required: true,
@@ -1377,16 +1448,16 @@ mod tests {
         state.popup = Some(popup(
             PopupKind::SubmissionForm,
             "Fuxa",
-            vec![String::new()],
+            vec![String::new(), "Easy".into()],
         ));
         let out = screen(&mut state);
         assert!(
             out.contains(Lang::En.t(Key::SubmitFormTitle)),
             "form title missing: {out}"
         );
-        // Labels come from fallback_form_fields() by index, not field.label.
-        assert!(out.contains("VM name:"), "first label missing: {out}");
-        assert!(out.contains("Download URL:"), "second label missing: {out}");
+        // Labels match by scraped field name, not index.
+        assert!(out.contains("VM name:"), "name label missing: {out}");
+        assert!(out.contains("Level:"), "level label missing: {out}");
     }
 
     #[test]
@@ -1510,5 +1581,106 @@ mod tests {
         let out = screen(&mut state);
         assert!(out.contains("Máquinas"), "Spanish tab missing: {out}");
         assert!(!out.contains("Machines"), "untranslated tab: {out}");
+    }
+
+    #[test]
+    fn footer_renders_active_download_bar_like_nyx_tui() {
+        let mut state = app();
+        state.tab = Tab::Machines;
+        state.download_jobs = vec![std::sync::Arc::new(crate::tui::downloads::DownloadJob {
+            vm: "Arcane".into(),
+            state: std::sync::Arc::new(std::sync::Mutex::new({
+                let mut dl = crate::tui::downloads::DownloadState::default();
+                dl.phase = crate::tui::downloads::Phase::Downloading;
+                dl.file_name = Some("arcane.zip".into());
+                dl.downloaded = 512 * 1024;
+                dl.total = 1024 * 1024;
+                dl.speed_bps = 256 * 1024;
+                dl
+            })),
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })];
+        let out = screen(&mut state);
+        assert!(
+            out.contains("↓ Arcane · arcane.zip · 512.0 KB/1.0 MB · 256.0 KB/s"),
+            "nyx-tui style download bar missing in footer: {out}"
+        );
+        assert!(
+            out.contains("o downloads"),
+            "o downloads hint missing: {out}"
+        );
+        assert!(out.contains("h help"), "h help hint missing: {out}");
+    }
+
+    #[test]
+    fn footer_shows_status_on_80_column_terminal() {
+        let mut state = app();
+        state.tab = Tab::Machines;
+        state.set_status("[↓] Download Fuxa started.");
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut state)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        assert!(
+            out.contains("[↓] Download Fuxa started."),
+            "status clipped on 80-col terminal: {out}"
+        );
+    }
+
+    #[test]
+    fn help_popup_renders_and_scrolls() {
+        let mut state = app();
+        state.open_help_popup();
+        let out = screen(&mut state);
+        assert!(
+            out.contains(Lang::En.t(Key::HelpTitle).trim()),
+            "help title missing: {out}"
+        );
+        assert!(
+            out.contains("[ Navigation ]"),
+            "help sections missing: {out}"
+        );
+        assert!(
+            out.contains(Lang::En.t(Key::HintHelpScroll)),
+            "scroll hint missing: {out}"
+        );
+
+        state.popup.as_mut().unwrap().scroll = 3;
+        let out = screen(&mut state);
+        assert!(out.contains("↑ 3"), "scroll indicator missing: {out}");
+    }
+
+    #[test]
+    fn downloads_overlay_clamps_ratio_and_shows_latest_when_many_jobs() {
+        let mut state = app();
+        state.view = ViewMode::Downloads;
+        for i in 0..15 {
+            state
+                .download_jobs
+                .push(std::sync::Arc::new(crate::tui::downloads::DownloadJob {
+                    vm: format!("Machine{i:02}"),
+                    state: std::sync::Arc::new(std::sync::Mutex::new({
+                        let mut dl = crate::tui::downloads::DownloadState::default();
+                        dl.phase = crate::tui::downloads::Phase::Downloading;
+                        dl.downloaded = 200;
+                        dl.total = 100; // >100% must clamp without overflow
+                        dl
+                    })),
+                    cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                }));
+        }
+        let out = screen(&mut state);
+        assert!(out.contains("Machine14"), "latest download missing: {out}");
+        assert!(
+            out.contains(Lang::En.t(Key::DownloadsHint)),
+            "overlay hint clipped: {out}"
+        );
     }
 }

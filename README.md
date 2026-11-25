@@ -122,9 +122,10 @@ Four keyboard-driven tabs — `Stats`, `Machines`, `Releases` and `Submissions`:
 | `/` | Filter the current list (type to narrow, `Enter` keeps it, `Esc` clears & exits) |
 | `a` | **Account popup** — shows the active account: `Enter` opens the login popup to switch accounts, `l` logs out, `Esc` closes |
 | `s` | **Machines only** — cycle size sort: site order → smallest first → largest first |
-| `h` | **Machines only** — toggle hiding fully-PWNED machines (press again to show them). |
+| `h` | **Help** — scrollable keyboard shortcuts reference (EN/ES). |
+| `x` | **Machines only** — toggle hiding fully-PWNED machines (press again to show them). |
 | `l` | **Switch UI language** — English ↔ Spanish, everywhere, persisted across sessions. |
-| `d` | **Machines only** — download popup: pick the destination folder (remembered across sessions, zsh-style `Tab` path completion included), MEGA link resolved automatically, streaming download with live progress in the Downloads overlay. MAC-verified before the file lands. |
+| `d` | **Machines only** — download popup: pick the destination folder (remembered across sessions, zsh-style `Tab` path completion included), MEGA link resolved automatically, streaming download with live progress in the footer and in the Downloads overlay (`o`). MAC-verified before the file lands. |
 | `w` | **Machines only** — community writeups popup for the selected machine: `j`/`k` to select, `Enter` opens the link in your browser, `Esc` closes. |
 | `o` | Toggle the **Downloads** overlay (live gauges, speed, final paths). Closing it never stops running downloads. |
 | `c` | **In the Downloads overlay** — cancel the most recent active download (the staged `.part` file is cleaned). |

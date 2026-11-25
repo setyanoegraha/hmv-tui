@@ -91,58 +91,62 @@ pub async fn tui_cmd() -> Result<()> {
         crate::tui::AppState::loading_with_lang(lang)
     };
 
-    // The closures now run on background threads inside the TUI, so grab
-    // the multi-thread runtime handle here (we are inside #[tokio::main])
-    // and block on it from those threads — no block_in_place needed.
+    // The closures run on background threads inside the TUI, so grab the
+    // multi-thread runtime handle here (we are inside #[tokio::main]).
+    // `block_in_place` keeps Tokio's scheduler moving background `tokio::spawn`
+    // downloads even when the event loop blocks on `event::poll`.
     let handle = tokio::runtime::Handle::current();
-    crate::tui::run(
-        initial,
-        {
-            let handle = handle.clone();
-            move || {
-                let sessions = take_session(&fetch_sessions)?;
-                handle.block_on(fetch_tui_data(&sessions))
-            }
-        },
-        {
-            let handle = handle.clone();
-            move |action| {
-                let sessions = take_session(&action_sessions)?;
-                handle.block_on(run_tui_action(&sessions, action))
-            }
-        },
-        {
-            let handle = handle.clone();
-            move |vm| {
-                let sessions = take_session(&writeups_sessions)?;
-                handle.block_on(async { WriteupManager::new(sessions.session()).fetch(vm).await })
-            }
-        },
-        {
-            let handle = handle.clone();
-            move |username, password| {
-                handle.block_on(configure_account(&config_sessions, username, password))
-            }
-        },
-        {
-            let handle = handle.clone();
-            move || handle.block_on(logout_account(&logout_sessions))
-        },
-        {
-            let handle = handle.clone();
-            move || {
-                let sessions = take_session(&submissions_sessions)?;
-                handle.block_on(async {
-                    let manager =
-                        crate::modules::submissions::SubmissionManager::new(sessions.session());
-                    let queue = manager.fetch_queue().await.unwrap_or_default();
-                    let rules = manager.fetch_rules().await.ok();
-                    let form = manager.fetch_form().await.unwrap_or_default();
-                    Ok((queue, rules, form))
-                })
-            }
-        },
-    )
+    tokio::task::block_in_place(|| {
+        crate::tui::run(
+            initial,
+            {
+                let handle = handle.clone();
+                move || {
+                    let sessions = take_session(&fetch_sessions)?;
+                    handle.block_on(fetch_tui_data(&sessions))
+                }
+            },
+            {
+                let handle = handle.clone();
+                move |action| {
+                    let sessions = take_session(&action_sessions)?;
+                    handle.block_on(run_tui_action(&sessions, action))
+                }
+            },
+            {
+                let handle = handle.clone();
+                move |vm| {
+                    let sessions = take_session(&writeups_sessions)?;
+                    handle
+                        .block_on(async { WriteupManager::new(sessions.session()).fetch(vm).await })
+                }
+            },
+            {
+                let handle = handle.clone();
+                move |username, password| {
+                    handle.block_on(configure_account(&config_sessions, username, password))
+                }
+            },
+            {
+                let handle = handle.clone();
+                move || handle.block_on(logout_account(&logout_sessions))
+            },
+            {
+                let handle = handle.clone();
+                move || {
+                    let sessions = take_session(&submissions_sessions)?;
+                    handle.block_on(async {
+                        let manager =
+                            crate::modules::submissions::SubmissionManager::new(sessions.session());
+                        let queue = manager.fetch_queue().await.unwrap_or_default();
+                        let rules = manager.fetch_rules().await.ok();
+                        let form = manager.fetch_form().await.unwrap_or_default();
+                        Ok((queue, rules, form))
+                    })
+                }
+            },
+        )
+    })
 }
 
 /// Validates the entered credentials by logging in, stores them, and
@@ -178,6 +182,7 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
             | crate::tui::PopupKind::Config
             | crate::tui::PopupKind::Account
             | crate::tui::PopupKind::Rules
+            | crate::tui::PopupKind::Help
     ) {
         anyhow::bail!("downloads, configuration and logout are handled directly by the event loop");
     }
@@ -185,7 +190,8 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
         crate::tui::PopupKind::Download
         | crate::tui::PopupKind::Config
         | crate::tui::PopupKind::Account
-        | crate::tui::PopupKind::Rules => unreachable!("handled by the event loop"),
+        | crate::tui::PopupKind::Rules
+        | crate::tui::PopupKind::Help => unreachable!("handled by the event loop"),
         crate::tui::PopupKind::SubmissionForm => {
             use crate::i18n::Key;
             use crate::tui::{ActionReport, ReportKind};

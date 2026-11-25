@@ -168,6 +168,14 @@ pub enum Key {
     FetchingFlag,
     FetchingWriteup,
     FetchingWriteupsList,
+    FetchingSubmittingVm,
+
+    // Help popup
+    HelpTitle,
+    HelpText,
+    HintHelpScroll,
+    FooterHelp,
+    FooterDownloads,
 
     // Writeups popup
     WriteupsPopupTitle,
@@ -188,7 +196,10 @@ pub enum Key {
     DownloadsTitle,
     DownloadsEmpty,
     DownloadsResolving,
+    DownloadsQueued,
     DownloadsHint,
+    DownloadBarResolving,
+    DownloadBarQueued,
 
     // Statuses — generic
     StatusCancelled,
@@ -222,6 +233,8 @@ pub enum Key {
     StatusDownloadStarted,
     StatusDownloadQueued,
     StatusDownloadFailed,
+    StatusDownloadDone,
+    StatusDownloadCancelled,
     StatusQueuedFlag,
     StatusQueuedWriteup,
     StatusQueuedDownload,
@@ -286,7 +299,7 @@ fn en(key: Key) -> &'static str {
 
         // Filter block
         FilterLabel => " filter: ",
-        PwnedHiddenIndicator => " · PWNED hidden (h)",
+        PwnedHiddenIndicator => " · PWNED hidden (x)",
 
         CompactMachineNotFound => "machine not found",
         CompactUnknown => "unknown",
@@ -311,9 +324,11 @@ fn en(key: Key) -> &'static str {
         StatusUploadOnlyMachines => "Writeup upload is only available on the Machines tab.",
         StatusWriteupsMachines => "Community writeups are only available on the Machines tab.",
         FooterSizeSort => "s size sort",
-        FooterHidePwned => "h hide PWNED",
+        FooterHidePwned => "x hide PWNED",
         FooterFlag => "f flag",
         FooterDownload => "d download",
+        FooterDownloads => "o downloads",
+        FooterHelp => "h help",
         FooterAccount => "a account",
         FooterRefresh => "r refresh",
         FooterQuit => "q quit",
@@ -372,9 +387,12 @@ fn en(key: Key) -> &'static str {
         DownloadsTitle => " Downloads ",
         DownloadsEmpty => "No downloads yet — press d on a machine.",
         DownloadsResolving => "… {}  resolving MEGA link…",
+        DownloadsQueued => "… {}  queued…",
         DownloadsHint => {
-            "o close (downloads keep running) · c cancel latest · q quit asks to confirm"
+            "o / Esc close (downloads keep running) · c cancel latest · q quit asks to confirm"
         }
+        DownloadBarResolving => "↓ {} · resolving MEGA link…",
+        DownloadBarQueued => "… {} queued",
 
         // Statuses — generic
         StatusCancelled => "Cancelled.",
@@ -397,7 +415,7 @@ fn en(key: Key) -> &'static str {
         StatusCancelDownload => "Cancelling {}...",
 
         // Statuses — machines tab
-        StatusPwnedHidden => "PWNED machines hidden — press h to show them again.",
+        StatusPwnedHidden => "PWNED machines hidden — press x to show them again.",
         StatusPwnedShown => "PWNED machines shown.",
         StatusSortOnly => "Size sort is only available on the Machines tab.",
         StatusFlagOnlyMachines => "Flag submission is only available on the Machines tab.",
@@ -408,6 +426,8 @@ fn en(key: Key) -> &'static str {
         StatusDownloadStarted => "[↓] Download {} started.",
         StatusDownloadQueued => "[↓] {} queued — {} downloads active.",
         StatusDownloadFailed => "Download failed: {}",
+        StatusDownloadDone => "[✓] {} downloaded → {}",
+        StatusDownloadCancelled => "[•] {} download cancelled.",
         StatusQueuedFlag => "Queued flag for {}...",
         StatusQueuedWriteup => "Queued writeup URL for {}...",
         StatusQueuedDownload => "Queued download for {}...",
@@ -430,6 +450,10 @@ fn en(key: Key) -> &'static str {
         FetchingFlag => "Submitting flag for {}...",
         FetchingWriteup => "Submitting writeup for {}...",
         FetchingWriteupsList => "Loading writeups for {}...",
+        FetchingSubmittingVm => "Submitting VM...",
+        HelpTitle => " Keyboard shortcuts ",
+        HelpText => HELP_TEXT_EN,
+        HintHelpScroll => "jk scroll · Esc close",
         // Header counters & tab bodies
     }
 }
@@ -449,7 +473,7 @@ fn es(key: Key) -> &'static str {
 
         // Filter block
         FilterLabel => " filtro: ",
-        PwnedHiddenIndicator => " · PWNED ocultas (h)",
+        PwnedHiddenIndicator => " · PWNED ocultas (x)",
 
         // Footer fragments
         FooterJkMove => "jk mover",
@@ -474,9 +498,11 @@ fn es(key: Key) -> &'static str {
         }
         StatusWriteupsMachines => "Los writeups de la comunidad solo están en la pestaña Máquinas.",
         FooterSizeSort => "s orden tamaño",
-        FooterHidePwned => "h ocultar PWNED",
+        FooterHidePwned => "x ocultar PWNED",
         FooterFlag => "f flag",
         FooterDownload => "d descargar",
+        FooterDownloads => "o descargas",
+        FooterHelp => "h ayuda",
         FooterAccount => "a cuenta",
         FooterRefresh => "r refrescar",
         FooterQuit => "q salir",
@@ -566,9 +592,12 @@ fn es(key: Key) -> &'static str {
         DownloadsTitle => " Descargas ",
         DownloadsEmpty => "Aún no hay descargas — pulsa d en una máquina.",
         DownloadsResolving => "… {}  resolviendo enlace de MEGA…",
+        DownloadsQueued => "… {}  en cola…",
         DownloadsHint => {
-            "o cerrar (las descargas siguen) · c cancelar la última · q pide confirmación"
+            "o / Esc cerrar (las descargas siguen) · c cancelar la última · q pide confirmación"
         }
+        DownloadBarResolving => "↓ {} · resolviendo enlace de MEGA…",
+        DownloadBarQueued => "… {} en cola",
 
         // Statuses — generic
         StatusCancelled => "Cancelado.",
@@ -591,7 +620,7 @@ fn es(key: Key) -> &'static str {
         StatusCancelDownload => "Cancelando {}...",
 
         // Statuses — machines tab
-        StatusPwnedHidden => "Máquinas PWNED ocultas — pulsa h para mostrarlas otra vez.",
+        StatusPwnedHidden => "Máquinas PWNED ocultas — pulsa x para mostrarlas otra vez.",
         StatusPwnedShown => "Máquinas PWNED visibles.",
         StatusSortOnly => "El orden por tamaño solo está disponible en la pestaña Máquinas.",
         StatusFlagOnlyMachines => "El envío de flags solo está disponible en la pestaña Máquinas.",
@@ -604,6 +633,8 @@ fn es(key: Key) -> &'static str {
         StatusDownloadStarted => "[↓] Descarga de {} iniciada.",
         StatusDownloadQueued => "[↓] {} en cola — {} descargas activas.",
         StatusDownloadFailed => "Descarga fallida: {}",
+        StatusDownloadDone => "[✓] {} descargada → {}",
+        StatusDownloadCancelled => "[•] Descarga de {} cancelada.",
         StatusQueuedFlag => "Flag en cola para {}...",
         StatusQueuedWriteup => "Writeup en cola para {}...",
         StatusQueuedDownload => "Descarga en cola para {}...",
@@ -622,10 +653,90 @@ fn es(key: Key) -> &'static str {
         FetchingFlag => "Enviando flag de {}...",
         FetchingWriteup => "Enviando writeup de {}...",
         FetchingWriteupsList => "Cargando writeups de {}...",
+        FetchingSubmittingVm => "Enviando VM...",
+        HelpTitle => " Atajos de teclado ",
+        HelpText => HELP_TEXT_ES,
+        HintHelpScroll => "jk desplazar · Esc cerrar",
         ReportWriteupRepeated => "Writeup: [=] YA ENVIADO",
         ReportWriteupRejected => "Writeup: ✗ RECHAZADO — ¿faltan flags?",
     }
 }
+
+const HELP_TEXT_EN: &str = "[ Navigation ]
+  Tab / →        next tab
+  ← / Shift-Tab  previous tab
+  j / ↓          move down
+  k / ↑          move up
+  g / Home       jump to the first row
+  /              filter (Enter confirm · Esc clears and exits)
+
+[ Machines ]
+  d              download VM from MEGA (max 2 parallel)
+  f              submit flag
+  w              community writeups
+  u              submit a writeup
+  x              hide PWNED machines
+  s              cycle size sort
+
+[ Submissions ]
+  v              submit your VM
+  i              submission guidelines
+
+[ Downloads ]
+  o              toggle Downloads overlay
+  c              cancel latest active download (in overlay)
+
+[ Anywhere ]
+  a              account (switch / logout)
+  l              switch language (EN/ES)
+  r              refresh data
+  h              this help
+  q / Ctrl-C     quit (asks if downloads are running)
+
+[ Popups ]
+  Tab            next field / complete path (Download)
+  ← / →          cycle select options
+  ↑ / ↓          previous / next field (or scroll)
+  Enter          confirm
+  Esc            cancel / close";
+
+const HELP_TEXT_ES: &str = "[ Navegación ]
+  Tab / →        siguiente pestaña
+  ← / Shift-Tab  pestaña anterior
+  j / ↓          bajar
+  k / ↑          subir
+  g / Home       ir a la primera fila
+  /              filtro (Enter confirma · Esc limpia y sale)
+
+[ Máquinas ]
+  d              descargar VM desde MEGA (máx. 2 en paralelo)
+  f              enviar flag
+  w              writeups de la comunidad
+  u              enviar un writeup
+  x              ocultar máquinas PWNED
+  s              ordenar por tamaño
+
+[ Envíos ]
+  v              enviar tu VM
+  i              normas de envío
+
+[ Descargas ]
+  o              abrir/cerrar panel de Descargas
+  c              cancelar última descarga activa (en el panel)
+
+[ En cualquier lugar ]
+  a              cuenta (cambiar / cerrar sesión)
+  l              cambiar idioma (EN/ES)
+  r              refrescar datos
+  h              esta ayuda
+  q / Ctrl-C     salir (pide confirmación si hay descargas)
+
+[ Popups ]
+  Tab            siguiente campo / completar ruta (Descarga)
+  ← / →          cambiar opción de selector
+  ↑ / ↓          campo anterior / siguiente (o desplazar)
+  Enter          confirmar
+  Esc            cancelar / cerrar";
 
 #[cfg(test)]
 mod tests {
@@ -655,6 +766,9 @@ mod tests {
             Key::ColDifficulty,
             Key::FooterQuit,
             Key::UploadLanguage,
+            Key::HelpTitle,
+            Key::FooterHelp,
+            Key::FooterDownloads,
         ];
         for key in keys {
             assert_ne!(
@@ -662,6 +776,19 @@ mod tests {
                 Lang::Es.t(key),
                 "{key:?} is identical in both languages"
             );
+        }
+    }
+
+    #[test]
+    fn help_text_covers_every_documented_key() {
+        for lang in [Lang::En, Lang::Es] {
+            let text = lang.t(Key::HelpText);
+            for key in [
+                "Tab", "j / ↓", "k / ↑", "g / Home", "/", "d ", "f ", "w ", "u ", "x ", "s ", "v ",
+                "i ", "o ", "c ", "a ", "l ", "r ", "h ", "q ",
+            ] {
+                assert!(text.contains(key), "{key} missing from {lang:?} help");
+            }
         }
     }
 }
